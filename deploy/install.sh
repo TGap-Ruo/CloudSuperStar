@@ -23,6 +23,7 @@
 #    --model NAME          DeepSeek 模型，默认 deepseek-chat
 #    --base-url URL        API 地址，默认 https://api.deepseek.com/v1
 #    --port N              Web 控制台端口，默认 8765
+#    --timezone TZ         定时任务时区，默认取服务器 /etc/timezone（国内建议 Asia/Shanghai）
 #    --token TOKEN         访问令牌；默认自动随机生成
 #    --no-token            不启用访问令牌（任何人可访问，风险自负）
 #    --max-parallel N      同时运行的任务数上限，默认 8
@@ -42,6 +43,7 @@ DATA_DIR="/var/lib/chaoxing"
 WEB_PORT="8765"
 WEB_TOKEN=""
 WEB_HOST="0.0.0.0"
+TIMEZONE=""
 MAX_PARALLEL="8"
 MODEL="deepseek-chat"
 BASE_URL="https://api.deepseek.com/v1"
@@ -71,6 +73,7 @@ usage() {
   --model NAME         模型，默认 deepseek-chat
   --base-url URL       API 地址，默认 https://api.deepseek.com/v1
   --port N             控制台端口，默认 8765
+  --timezone TZ        定时任务时区（国内建议 Asia/Shanghai）
   --token TOKEN        访问令牌，默认随机生成
   --no-token           关闭访问令牌（风险自负）
   --max-parallel N     同时运行任务数上限，默认 8
@@ -90,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --model)          MODEL="${2:-}"; shift 2 ;;
     --base-url)       BASE_URL="${2:-}"; shift 2 ;;
     --port)           WEB_PORT="${2:-}"; shift 2 ;;
+    --timezone)       TIMEZONE="${2:-}"; shift 2 ;;
     --host)           WEB_HOST="${2:-}"; shift 2 ;;
     --token)          WEB_TOKEN="${2:-}"; shift 2 ;;
     --no-token)       WEB_TOKEN="__NO_TOKEN__"; shift ;;
@@ -258,6 +262,21 @@ fi
 
 # ------------------------------------------------------------------ 5. 写配置
 title "5/7 生成配置"
+
+# 服务器时区：云镜像默认多为 Etc/UTC，而 cron 表达式按该时区解释，
+# 国内用户若不注意会把"每天 8 点"配成北京时间 16 点。
+if [[ -z "${TIMEZONE}" ]]; then
+  TIMEZONE="$(cat /etc/timezone 2>/dev/null || echo "")"
+  [[ -z "${TIMEZONE}" ]] && TIMEZONE="$(timedatectl show -p Timezone --value 2>/dev/null || echo Asia/Shanghai)"
+fi
+case "${TIMEZONE}" in
+  ""|UTC|Etc/UTC|GMT|Etc/GMT)
+    warn "检测到服务器时区为 ${TIMEZONE:-UTC}：定时任务的 cron 会按该时区执行。"
+    warn "国内用户建议：本命令加 --timezone Asia/Shanghai，或先执行 timedatectl set-timezone Asia/Shanghai"
+    ;;
+  *) info "定时任务时区: ${TIMEZONE}" ;;
+esac
+
 if [[ -z "${WEB_TOKEN}" ]]; then
   WEB_TOKEN="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   info "已自动生成访问令牌"
@@ -277,14 +296,14 @@ fi
   --web-port "${WEB_PORT}" \
   --web-token "${WEB_TOKEN}" \
   --web-max-parallel "${MAX_PARALLEL}" \
-  --timezone "$(cat /etc/timezone 2>/dev/null || echo Asia/Shanghai)" \
+  --timezone "${TIMEZONE}" \
   || die "生成配置文件失败"
 
 cat > "${ETC_DIR}/chaoxing.env" <<EOF
 # 由部署脚本生成；账号密码等敏感信息可以放这里，配合 config.yaml 的 password_env 使用
 PYTHONIOENCODING=utf-8
 PYTHONUNBUFFERED=1
-TZ=$(cat /etc/timezone 2>/dev/null || echo Asia/Shanghai)
+TZ=${TIMEZONE}
 EOF
 
 chmod 600 "${ETC_DIR}/config.yaml" "${ETC_DIR}/chaoxing.env"
@@ -356,6 +375,11 @@ ${GREEN}${BOLD}部署完成 ✅${NC}
   ${BOLD}DeepSeek${NC}：${MODEL} @ ${BASE_URL}
   ${BOLD}配置文件${NC}：${ETC_DIR}/config.yaml
   ${BOLD}数据目录${NC}：${DATA_DIR}
+
+  ${BOLD}浏览器打不开控制台？${NC}
+  国内直连国外服务器的非标准端口（如 ${WEB_PORT}）常被运营商拦截，此时用 SSH 隧道最稳：
+    ssh -L ${WEB_PORT}:127.0.0.1:${WEB_PORT} root@${PUBLIC_IP}
+    然后在本地浏览器打开：http://127.0.0.1:${WEB_PORT}/${TOKEN_SUFFIX}
 
   打开控制台后，直接填写学习通「账号 + 密码」即可开始刷课：
     · 支持「批量并行」：每行一个账号（账号,密码）
