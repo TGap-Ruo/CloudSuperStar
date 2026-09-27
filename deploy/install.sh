@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
+#  ⚠️ 你现在看到的是脚本源码（说明只执行了 curl，没有真正安装）。
+#     要真正部署，请把下面这条命令整行复制到服务器执行（注意结尾的 | bash）：
+#
+#       curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh \
+#         | sudo bash -s -- --deepseek-key sk-你的DeepSeek密钥
+#
+# =============================================================================
 #  超星学习通 · 自动刷课/答题  Ubuntu 一键部署
 #
 #  服务器一行命令（推荐，必须带上 DeepSeek API Key）：
@@ -138,13 +145,35 @@ fi
 
 if [[ -z "${SRC_ROOT}" ]]; then
   case "${GIT_HOST}" in
-    github) DOWNLOAD_URL="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.zip" ;;
-    gitee)  DOWNLOAD_URL="https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip" ;;
+    github)
+      PRIMARY_URL="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.zip"
+      FALLBACK_URL="https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip"
+      ;;
+    gitee)
+      PRIMARY_URL="https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip"
+      FALLBACK_URL="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.zip"
+      ;;
     *) die "不支持的代码源: ${GIT_HOST}（可选 github / gitee）" ;;
   esac
-  info "从 ${GIT_HOST} 下载源码: ${DOWNLOAD_URL}"
-  wget -q --timeout=180 -O "${TMP_ROOT}/repo.zip" "${DOWNLOAD_URL}" \
-    || die "源码下载失败，请确认仓库 ${REPO} 为公开仓库且分支 ${BRANCH} 存在"
+
+  DOWNLOADED="0"
+  for url in "${PRIMARY_URL}" "${FALLBACK_URL}"; do
+    info "下载源码: ${url}"
+    if wget -q --timeout=60 --tries=2 -O "${TMP_ROOT}/repo.zip" "${url}"; then
+      DOWNLOADED="1"
+      break
+    fi
+    warn "该地址下载失败，尝试备用地址…"
+  done
+
+  if [[ "${DOWNLOADED}" != "1" ]]; then
+    warn "源码下载失败（${REPO} / ${BRANCH}）。可选办法："
+    warn "  1) 先把仓库镜像到 Gitee，再加 --gitee 重跑本命令"
+    warn "  2) 在能联网的机器上 git clone 后把整个目录上传到服务器，然后执行："
+    warn "     cd 项目目录 && sudo bash deploy/install.sh --deepseek-key sk-你的密钥"
+    die "无法获取源码，已退出"
+  fi
+
   unzip -q -o "${TMP_ROOT}/repo.zip" -d "${TMP_ROOT}/src" || die "解压失败"
   CLI_FILE="$(find "${TMP_ROOT}/src" -maxdepth 3 -type f -path '*/server/cli.py' -print -quit)"
   [[ -n "${CLI_FILE}" ]] || die "源码结构不符（未找到 server/cli.py）"
