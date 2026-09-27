@@ -1,0 +1,20 @@
+[Unit]
+Description=超星学习通单账号立即刷课 (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=-__ETC_DIR__/chaoxing.env
+# 用法：sudo systemctl start 'chaoxing-run@账号名'
+ExecStart=__APP_DIR__/.venv/bin/python -m server.cli --config __ETC_DIR__/config.yaml run -a %i
+TimeoutStartSec=6h
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=__DATA_DIR__ __ETC_DIR__ __APP_DIR__

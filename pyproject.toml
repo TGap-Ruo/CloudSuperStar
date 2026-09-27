@@ -1,0 +1,46 @@
+[project]
+name = "chaoxing-server"
+version = "1.0.0"
+description = "超星学习通 Ubuntu 服务端自动化：定时刷课、AI 答题、签到与通知"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32.0",
+    "pyaes>=1.6.1",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "loguru>=0.7.2",
+    "tqdm>=4.66.0",
+    "fonttools>=4.50.0",
+    "httpx>=0.27.0",
+    "openai>=1.40.0",
+    "urllib3>=2.0.0",
+    "chardet>=3.0.2,<6.0.0",
+    "tenacity>=8.2.0",
+    "PyYAML>=6.0.1",
+    "APScheduler>=3.10.4,<4.0",
+    "Flask>=3.0.0",
+]
+
+[project.optional-dependencies]
+captcha = ["ddddocr>=1.5.6"]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+chaoxing = "server.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["chaoxing_core", "server", "deploy"]
+
+[tool.setuptools.package-data]
+chaoxing_core = ["resources/*.json"]
+server = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

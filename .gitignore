@@ -1,0 +1,26 @@
+# 配置与运行数据（含账号密码、Cookie，绝对不要提交）
+config.yaml
+data/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+
+# 核心运行时产物
+chaoxing.log
+cookies.txt
+cache.json
+celeryresults.sqlite3
+
+# 参考仓库
+_ref/

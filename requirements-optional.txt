@@ -1,0 +1,3 @@
+# 可选：遇到验证码拦截时自动识别（会安装 onnxruntime，体积较大）
+# pip install -r requirements-optional.txt
+ddddocr>=1.5.6

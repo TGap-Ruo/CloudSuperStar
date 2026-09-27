@@ -1,0 +1,18 @@
+# 核心（chaoxing_core）
+requests>=2.32.0
+pyaes>=1.6.1
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+loguru>=0.7.2
+tqdm>=4.66.0
+fonttools>=4.50.0
+httpx>=0.27.0
+openai>=1.40.0
+urllib3>=2.0.0
+chardet>=3.0.2,<6.0.0
+tenacity>=8.2.0
+
+# 服务端
+PyYAML>=6.0.1
+APScheduler>=3.10.4,<4.0
+Flask>=3.0.0

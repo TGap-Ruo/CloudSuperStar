@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>超星学习通 · 自动刷课控制台</title>
+<style>
+  :root {
+    --bg: #f4f6fa; --card: #fff; --border: #e6e9f0; --text: #1f2430;
+    --muted: #6b7280; --primary: #2563eb; --primary-dark: #1d4ed8;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --term-bg: #10141c;
+    --shadow: 0 1px 3px rgba(16,24,40,.06), 0 8px 24px -12px rgba(16,24,40,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1218; --card: #171b23; --border: #262c38; --text: #e6e9ef;
+      --muted: #9aa3b2; --shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px;
+  }
+  .header {
+    padding: 18px 24px; background: linear-gradient(120deg, #1e3a8a, #2563eb 55%, #3b82f6);
+    color: #fff; display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+  }
+  .header h1 { font-size: 19px; font-weight: 600; letter-spacing: .2px; }
+  .header .sub { font-size: 12px; opacity: .82; margin-top: 3px; }
+  .header-badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .badge {
+    background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.24);
+    padding: 4px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap;
+  }
+  .badge.ok { background: rgba(22,163,74,.28); border-color: rgba(22,163,74,.5); }
+  .badge.bad { background: rgba(220,38,38,.28); border-color: rgba(220,38,38,.5); }
+  .wrap { max-width: 1440px; margin: 20px auto; padding: 0 20px; display: grid;
+          grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
+  .col-left { display: flex; flex-direction: column; gap: 18px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+          box-shadow: var(--shadow); overflow: hidden; }
+  .card-head { padding: 14px 18px; border-bottom: 1px solid var(--border);
+               font-weight: 600; display: flex; align-items: center;
+               justify-content: space-between; gap: 10px; font-size: 14px; }
+  .card-body { padding: 18px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 13px; background: transparent; color: var(--text); outline: none;
+    font-family: inherit; transition: border-color .15s, box-shadow .15s;
+  }
+  textarea { resize: vertical; min-height: 104px; line-height: 1.7; font-family: ui-monospace, Menlo, monospace; }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,.14);
+  }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .field { margin-bottom: 14px; }
+  .tabs { display: flex; gap: 6px; background: var(--bg); padding: 4px;
+          border-radius: 9px; margin-bottom: 16px; }
+  .tab { flex: 1; text-align: center; padding: 7px; border-radius: 7px;
+         cursor: pointer; font-size: 13px; color: var(--muted); user-select: none; }
+  .tab.active { background: var(--card); color: var(--text); font-weight: 600;
+                box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .btn { padding: 9px 16px; border: none; border-radius: 8px; font-size: 13px;
+         font-weight: 500; cursor: pointer; transition: filter .15s, background .15s;
+         font-family: inherit; }
+  .btn:hover { filter: brightness(.95); }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+  .btn-primary { background: var(--primary); color: #fff; width: 100%; padding: 11px; font-size: 14px; }
+  .btn-default { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+  .btn-danger { background: #fee2e2; color: #b91c1c; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+  details.adv { margin: 4px 0 16px; }
+  details.adv > summary { cursor: pointer; font-size: 12px; color: var(--muted);
+                          list-style: none; padding: 6px 0; }
+  details.adv > summary::-webkit-details-marker { display: none; }
+  details.adv > summary::before { content: "▸ "; }
+  details.adv[open] > summary::before { content: "▾ "; }
+  .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .stats { display: flex; gap: 14px; padding: 10px 18px; border-bottom: 1px solid var(--border);
+           font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+  .task-list { max-height: 420px; overflow-y: auto; }
+  .task-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .task-item:hover { background: rgba(37,99,235,.04); }
+  .task-item.active { background: rgba(37,99,235,.09); border-left: 3px solid var(--primary); }
+  .task-line { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .task-name { font-weight: 600; font-size: 13px; }
+  .task-meta { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
+  .pill { font-size: 11px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .pill.running { background: rgba(37,99,235,.14); color: #1d4ed8; }
+  .pill.finished { background: rgba(22,163,74,.14); color: #15803d; }
+  .pill.failed { background: rgba(220,38,38,.14); color: #b91c1c; }
+  .pill.stopped { background: rgba(107,114,128,.16); color: #4b5563; }
+  .empty { padding: 30px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+  .terminal {
+    background: var(--term-bg); color: #d7dce5; font-family: ui-monospace, Menlo,
+    Consolas, monospace; font-size: 12.5px; line-height: 1.65; padding: 14px 16px;
+    height: 560px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  .terminal .l-error { color: #f87171; }
+  .terminal .l-warn { color: #fbbf24; }
+  .terminal .l-ok { color: #4ade80; }
+  .terminal .l-dim { color: #7c8798; }
+  .placeholder { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+  .toolbar label { display: flex; align-items: center; gap: 4px; margin: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .full { grid-column: 1 / -1; }
+  .toast { position: fixed; right: 22px; top: 22px; z-index: 99; padding: 11px 16px;
+           border-radius: 9px; background: #111827; color: #fff; font-size: 13px;
+           box-shadow: 0 8px 24px rgba(0,0,0,.3); max-width: 380px; }
+  .toast.error { background: #b91c1c; } .toast.ok { background: #15803d; }
+  .modal { position: fixed; inset: 0; background: rgba(15,18,24,.55);
+           display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .modal .card { width: 380px; }
+  code { background: rgba(127,127,127,.14); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  @media (max-width: 1080px) { .wrap { grid-template-columns: 1fr; } .terminal { height: 380px; } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>超星学习通 · 自动刷课控制台</h1>
+    <div class="sub">输入账号密码即可并行刷课与自动答题 · 实时日志</div>
+  </div>
+  <div class="header-badges">
+    <span class="badge" id="badgeDeepseek">检测 DeepSeek…</span>
+    <span class="badge" id="badgeStats">运行中 0</span>
+    <span class="badge" id="badgeVersion">v—</span>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="col-left">
+    <div class="card">
+      <div class="card-head">开始刷课</div>
+      <div class="card-body">
+        <div class="tabs">
+          <div class="tab active" data-mode="single" onclick="switchTab('single')">单个账号</div>
+          <div class="tab" data-mode="batch" onclick="switchTab('batch')">批量并行</div>
+        </div>
+
+        <div id="paneSingle">
+          <div class="field">
+            <label>学习通账号（手机号）</label>
+            <input type="text" id="username" placeholder="13800000000" autocomplete="off">
+          </div>
+          <div class="field">
+            <label>密码</label>
+            <input type="password" id="password" placeholder="学习通登录密码" autocomplete="off">
+          </div>
+        </div>
+
+        <div id="paneBatch" style="display:none">
+          <div class="field">
+            <label>批量账号（每行一个，格式：账号,密码）</label>
+            <textarea id="accountsText" placeholder="13800000001,密码1&#10;13800000002,密码2"></textarea>
+          </div>
+          <div class="hint">每行一个账号，最多同时运行 {{ max_parallel }} 个任务。</div>
+        </div>
+
+        <details class="adv">
+          <summary>高级设置（可选）</summary>
+          <div style="padding-top:10px">
+            <div class="field">
+              <label>只刷指定课程 ID（逗号分隔，留空 = 全部）</label>
+              <input type="text" id="courseIds" placeholder="2151141,189191">
+            </div>
+            <div class="row">
+              <div class="field">
+                <label>视频倍速</label>
+                <select id="speed">
+                  <option value="">默认</option>
+                  <option value="1">1.0×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="2">2.0×</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>并发章节数</label>
+                <select id="jobs">
+                  <option value="">默认</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="6">6</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label>答完自动提交</label>
+                <select id="submit">
+                  <option value="">默认</option>
+                  <option value="true">提交</option>
+                  <option value="false">只保存不提交</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>最低题库覆盖率</label>
+                <input type="number" id="coverRate" min="0" max="1" step="0.05" placeholder="默认">
+              </div>
+            </div>
+            <div class="field">
+              <label>章节检测答错后重做次数</label>
+              <input type="number" id="workMaxRetries" min="0" max="10" step="1" placeholder="默认">
+            </div>
+          </div>
+        </details>
+
+        <button class="btn btn-primary" id="startBtn" onclick="startTasks()">开始刷课</button>
+        <div class="hint" style="margin-top:10px">
+          密码仅用于本次登录，写入任务私有配置（权限 600），不会显示在任务列表中。
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span>任务列表</span>
+        <button class="btn btn-default btn-sm" onclick="loadTasks()">刷新</button>
+      </div>
+      <div class="stats">
+        <span><i class="dot" style="background:#2563eb"></i>运行中 <b id="stRunning">0</b></span>
+        <span><i class="dot" style="background:#16a34a"></i>已完成 <b id="stFinished">0</b></span>
+        <span><i class="dot" style="background:#dc2626"></i>失败 <b id="stFailed">0</b></span>
+        <span><i class="dot" style="background:#6b7280"></i>已停止 <b id="stStopped">0</b></span>
+      </div>
+      <div class="task-list" id="taskList">
+        <div class="empty">暂无任务</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span id="outputTitle">实时日志</span>
+      <div class="toolbar">
+        <label><input type="checkbox" id="autoScroll" checked> 自动滚动</label>
+        <button class="btn btn-default btn-sm" onclick="clearOutput()">清空</button>
+        <button class="btn btn-default btn-sm" id="downloadBtn" onclick="downloadLog()" style="display:none">下载日志</button>
+      </div>
+    </div>
+    <div class="placeholder" id="termPlaceholder">选择左侧任务查看实时日志</div>
+    <div class="terminal" id="terminal" style="display:none"></div>
+  </div>
+
+  <div class="card full">
+    <div class="card-head">
+      <span>定时账号与历史运行</span>
+      <button class="btn btn-default btn-sm" onclick="loadStatus()">刷新</button>
+    </div>
+    <div class="card-body">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">
+        定时账号来自 <code>config.yaml</code> 的 <code>accounts</code>；网页录入的账号见上方「任务列表」。
+      </div>
+      <table>
+        <thead><tr><th>账号</th><th>启用</th><th>cron</th><th>下次运行</th><th>上次状态</th><th>连续失败</th></tr></thead>
+        <tbody id="schedBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+      </table>
+      <div style="height:18px"></div>
+      <table>
+        <thead><tr><th>#</th><th>账号</th><th>开始(UTC)</th><th>状态</th><th>章节</th><th>答题命中</th><th>耗时</th><th>信息</th></tr></thead>
+        <tbody id="runsBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const HAS_TOKEN = "{{ has_token }}" === "1";
+const MAX_PARALLEL = {{ max_parallel }};
+
+let tasks = [];
+let currentTaskId = null;
+let eventSource = null;
+let pollTimer = null;
+
+/* ───────────── 访问令牌 ───────────── */
+function getToken() {
+  const url = new URL(location.href);
+  const fromUrl = url.searchParams.get('token');
+  if (fromUrl) {
+    localStorage.setItem('cx_token', fromUrl);
+    url.searchParams.delete('token');
+    const rest = url.searchParams.toString();
+    history.replaceState(null, '', url.pathname + (rest ? '?' + rest : ''));
+    return fromUrl;
+  }
+  return localStorage.getItem('cx_token') || '';
+}
+function setToken(value) { localStorage.setItem('cx_token', value); }
+
+async function api(path, options) {
+  const opts = Object.assign({ headers: {} }, options || {});
+  const token = getToken();
+  if (token) opts.headers['X-Token'] = token;
+  if (opts.body && !opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json';
+  const resp = await fetch(path, opts);
+  if (resp.status === 401) { showTokenModal(); throw new Error('需要访问令牌'); }
+  const text = await resp.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = { error: text }; }
+  if (!resp.ok) throw new Error((data && (data.error || data.message)) || ('HTTP ' + resp.status));
+  return data;
+}
+
+/* ───────────── 通用 UI ───────────── */
+function toast(message, type) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type === 'error' ? 'error' : type === 'ok' ? 'ok' : '');
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(function () { el.remove(); }, 3600);
+}
+function esc(text) {
+  return String(text === null || text === undefined ? '' : text).replace(/[&<>"']/g,
+    function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+}
+function switchTab(mode) {
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.classList.toggle('active', t.dataset.mode === mode);
+  });
+  document.getElementById('paneSingle').style.display = mode === 'single' ? '' : 'none';
+  document.getElementById('paneBatch').style.display = mode === 'batch' ? '' : 'none';
+}
+
+/* ───────────── 启动任务 ───────────── */
+function collectOptions() {
+  const payload = {};
+  const courseIds = document.getElementById('courseIds').value.trim();
+  if (courseIds) payload.course_ids = courseIds;
+  const speed = document.getElementById('speed').value;
+  if (speed) payload.speed = parseFloat(speed);
+  const jobs = document.getElementById('jobs').value;
+  if (jobs) payload.jobs = parseInt(jobs, 10);
+  const submit = document.getElementById('submit').value;
+  if (submit) payload.submit = (submit === 'true');
+  const coverRate = document.getElementById('coverRate').value;
+  if (coverRate) payload.cover_rate = parseFloat(coverRate);
+  const retries = document.getElementById('workMaxRetries').value;
+  if (retries !== '') payload.work_max_retries = parseInt(retries, 10);
+  return payload;
+}
+
+async function startTasks() {
+  const singleVisible = document.getElementById('paneSingle').style.display !== 'none';
+  const payload = collectOptions();
+  if (singleVisible) {
+    payload.username = document.getElementById('username').value.trim();
+    payload.password = document.getElementById('password').value;
+    if (!payload.username) { toast('请输入账号', 'error'); return; }
+    if (!payload.password) { toast('请输入密码', 'error'); return; }
+  } else {
+    payload.accounts_text = document.getElementById('accountsText').value;
+    if (!payload.accounts_text.trim()) { toast('请粘贴账号列表', 'error'); return; }
+  }
+
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  btn.textContent = '启动中…';
+  try {
+    const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify(payload) });
+    const started = data.started || [];
+    const errors = data.errors || [];
+    toast('已启动 ' + started.length + ' 个任务' + (errors.length ? '，' + errors.length + ' 个失败' : ''), 'ok');
+    errors.slice(0, 3).forEach(function (e) { toast(e.username + ': ' + e.error, 'error'); });
+    document.getElementById('password').value = '';
+    await loadTasks();
+    if (started.length) selectTask(started[0].id);
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '开始刷课';
+  }
+}
+
+/* ───────────── 任务列表 ───────────── */
+const STATUS_LABEL = { running: '运行中', finished: '已完成', failed: '失败', stopped: '已停止' };
+
+async function loadTasks() {
+  try {
+    const data = await api('/api/tasks?limit=100');
+    tasks = data.tasks || [];
+    renderTasks();
+    renderStats(data.stats || {});
+  } catch (err) { /* 未授权时已弹窗 */ }
+}
+
+function renderStats(stats) {
+  document.getElementById('stRunning').textContent = stats.running || 0;
+  document.getElementById('stFinished').textContent = stats.finished || 0;
+  document.getElementById('stFailed').textContent = stats.failed || 0;
+  document.getElementById('stStopped').textContent = stats.stopped || 0;
+  document.getElementById('badgeStats').textContent =
+    '运行中 ' + (stats.running || 0) + ' / 上限 ' + (stats.max_parallel || MAX_PARALLEL);
+}
+
+function renderTasks() {
+  const box = document.getElementById('taskList');
+  if (!tasks.length) { box.innerHTML = '<div class="empty">暂无任务</div>'; return; }
+  box.innerHTML = tasks.map(function (t) {
+    const s = t.summary || {};
+    const chapter = s.chapters_total ? ('章节 ' + (s.chapters_finished || 0) + '/' + s.chapters_total) : '';
+    const answer = s.answer_total ? ('答题命中 ' + (s.answer_covered || 0) + '/' + s.answer_total) : '';
+    const extra = (chapter || answer)
+      ? '<div class="task-meta">' + esc(chapter) + (chapter && answer ? ' · ' : '') + esc(answer) + '</div>'
+      : '';
+    const reason = t.stop_reason ? (' · ' + esc(t.stop_reason)) : '';
+    const buttons = t.status === 'running'
+      ? '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();stopTask(\'' + t.id + '\')">停止</button>'
+      : '<button class="btn btn-default btn-sm" onclick="event.stopPropagation();deleteTask(\'' + t.id + '\')">删除</button>';
+    return '<div class="task-item ' + (t.id === currentTaskId ? 'active' : '') + '" onclick="selectTask(\'' + t.id + '\')">' +
+      '<div class="task-line"><span class="task-name">' + esc(t.display_name || t.username) + '</span>' +
+      '<span class="pill ' + t.status + '">' + (STATUS_LABEL[t.status] || t.status) + '</span></div>' +
+      '<div class="task-meta">' + esc(t.created_at) + reason + '</div>' + extra +
+      '<div class="task-meta" style="margin-top:6px;display:flex;gap:6px">' + buttons + '</div></div>';
+  }).join('');
+}
+
+async function stopTask(id) {
+  try {
+    await api('/api/tasks/' + id + '/stop', { method: 'POST' });
+    toast('已发送停止信号', 'ok');
+    loadTasks();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deleteTask(id) {
+  if (!confirm('确定删除该任务及其日志吗？')) return;
+  try {
+    await api('/api/tasks/' + id, { method: 'DELETE' });
+    if (currentTaskId === id) { closeStream(); currentTaskId = null; resetTerminal(); }
+    toast('已删除', 'ok');
+    loadTasks();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/* ───────────── 实时日志 ───────────── */
+function resetTerminal() {
+  document.getElementById('terminal').style.display = 'none';
+  document.getElementById('termPlaceholder').style.display = '';
+  document.getElementById('downloadBtn').style.display = 'none';
+  document.getElementById('outputTitle').textContent = '实时日志';
+  document.getElementById('terminal').innerHTML = '';
+}
+
+function closeStream() {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+}
+
+function selectTask(id) {
+  currentTaskId = id;
+  closeStream();
+  const term = document.getElementById('terminal');
+  term.innerHTML = '';
+  term.style.display = '';
+  document.getElementById('termPlaceholder').style.display = 'none';
+  document.getElementById('downloadBtn').style.display = '';
+  const task = tasks.filter(function (t) { return t.id === id; })[0];
+  document.getElementById('outputTitle').textContent =
+    '实时日志 · ' + (task ? (task.display_name || task.username) : id);
+  renderTasks();
+
+  const token = getToken();
+  openStream('/api/stream/' + id + (token ? '?token=' + encodeURIComponent(token) : ''));
+}
+
+function openStream(url) {
+  eventSource = new EventSource(url);
+  eventSource.onmessage = function (event) { appendRaw(event.data); };
+  eventSource.addEventListener('end', function (event) {
+    let payload = {};
+    try { payload = JSON.parse(event.data); } catch (e) { payload = {}; }
+    const s = payload.summary;
+    if (s) {
+      appendRaw('\n—— 任务结束：章节 ' + (s.chapters_finished || 0) + '/' + (s.chapters_total || 0) +
+        '　答题命中 ' + (s.answer_covered || 0) + '/' + (s.answer_total || 0) +
+        '　耗时 ' + Math.round((s.duration_seconds || 0) / 60) + ' 分钟 ——\n');
+    } else {
+      appendRaw('\n—— 任务结束：' + (payload.status || '') + ' ' + (payload.stop_reason || '') + ' ——\n');
+    }
+    closeStream();
+    loadTasks();
+  });
+  eventSource.onerror = function () { /* 浏览器自动重连，任务结束后由 end 事件关闭 */ };
+}
+
+function appendRaw(text) {
+  const term = document.getElementById('terminal');
+  const lines = String(text === null || text === undefined ? '' : text).split('\n');
+  lines.forEach(function (line, index) {
+    if (index === lines.length - 1 && line === '') return;
+    const span = document.createElement('div');
+    span.className = classify(line);
+    span.textContent = line;
+    term.appendChild(span);
+  });
+  if (document.getElementById('autoScroll').checked) term.scrollTop = term.scrollHeight;
+}
+
+function classify(line) {
+  if (/ERROR|错误|FAILED|失败|Traceback|Exception/.test(line)) return 'l-error';
+  if (/WARNING|警告|403|未开启/.test(line)) return 'l-warn';
+  if (/SUCCESS|成功|完成|✅/.test(line)) return 'l-ok';
+  if (/DEBUG|TRACE/.test(line)) return 'l-dim';
+  return '';
+}
+
+function clearOutput() { document.getElementById('terminal').innerHTML = ''; }
+
+function downloadLog() {
+  if (!currentTaskId) return;
+  const token = getToken();
+  const a = document.createElement('a');
+  a.href = '/api/tasks/' + currentTaskId + '/log' + (token ? '?token=' + encodeURIComponent(token) : '');
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/* ───────────── 元信息 / 定时状态 ───────────── */
+async function loadMeta() {
+  try {
+    const meta = await api('/api/meta');
+    const badge = document.getElementById('badgeDeepseek');
+    if (meta.deepseek && meta.deepseek.configured) {
+      badge.textContent = 'DeepSeek 已配置 · ' + (meta.deepseek.model || 'AI');
+      badge.className = 'badge ok';
+    } else {
+      badge.textContent = '未配置 DeepSeek Key';
+      badge.className = 'badge bad';
+      toast('未配置 DeepSeek API Key：无法自动做题。请重新运行部署脚本并带上 --deepseek-key', 'error');
+    }
+    document.getElementById('badgeVersion').textContent = 'v' + (meta.version || '-');
+    renderStats(meta.stats || {});
+  } catch (err) { /* ignore */ }
+}
+
+async function loadStatus() {
+  try {
+    const data = await api('/api/status');
+    const accounts = data.accounts || [];
+    document.getElementById('schedBody').innerHTML = accounts.length
+      ? accounts.map(function (a) {
+          return '<tr><td>' + esc(a.account) + '</td><td>' + esc(a.enabled) + '</td>' +
+            '<td><code>' + esc(a.schedule) + '</code></td><td>' + esc(a.next_run) + '</td>' +
+            '<td>' + esc(a.last_status) + '</td><td>' + esc(a.consecutive_failures) + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="6" class="empty">未配置定时账号（网页任务见上方任务列表）</td></tr>';
+
+    const runs = data.runs || [];
+    document.getElementById('runsBody').innerHTML = runs.length
+      ? runs.map(function (r) {
+          return '<tr><td>' + esc(r.id) + '</td><td>' + esc(r.account) + '</td>' +
+            '<td>' + esc(String(r.started_at || '').slice(0, 19).replace('T', ' ')) + '</td>' +
+            '<td>' + esc(r.status) + '</td><td>' + esc(r.chapters_finished) + '/' + esc(r.chapters_total) + '</td>' +
+            '<td>' + esc(r.answer_covered) + '/' + esc(r.answer_total) + '</td>' +
+            '<td>' + ((r.duration_seconds || 0) / 60).toFixed(1) + 'm</td>' +
+            '<td>' + esc(String(r.message || '').slice(0, 40)) + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="8" class="empty">暂无运行记录</td></tr>';
+  } catch (err) { /* ignore */ }
+}
+
+/* ───────────── 令牌弹窗 ───────────── */
+function showTokenModal() {
+  if (document.getElementById('tokenModal')) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.id = 'tokenModal';
+  modal.innerHTML =
+    '<div class="card"><div class="card-head">需要访问令牌</div><div class="card-body">' +
+    '<div class="hint" style="margin-bottom:12px">部署脚本会打印带 token 的访问地址；也可在此粘贴令牌，本机浏览器会记住。</div>' +
+    '<div class="field"><input type="text" id="tokenInput" placeholder="访问令牌"></div>' +
+    '<button class="btn btn-primary" onclick="submitToken()">进入控制台</button></div></div>';
+  document.body.appendChild(modal);
+}
+
+function submitToken() {
+  const value = document.getElementById('tokenInput').value.trim();
+  if (!value) return;
+  setToken(value);
+  document.getElementById('tokenModal').remove();
+  bootstrap();
+}
+
+/* ───────────── 启动 ───────────── */
+function bootstrap() {
+  loadMeta();
+  loadTasks();
+  loadStatus();
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(function () { loadTasks(); loadStatus(); }, 5000);
+}
+
+document.getElementById('password').addEventListener('keypress', function (e) {
+  if (e.key === 'Enter') startTasks();
+});
+
+getToken();
+bootstrap();
+</script>
+</body>
+</html>

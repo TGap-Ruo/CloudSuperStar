@@ -1,0 +1,32 @@
+[Unit]
+Description=超星学习通 Web 控制台（网页输入账号刷课）
+Documentation=file://__APP_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=-__ETC_DIR__/chaoxing.env
+ExecStart=__APP_DIR__/.venv/bin/python -m server.cli --config __ETC_DIR__/config.yaml web --host 0.0.0.0 --port __PORT__
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chaoxing-web
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=__DATA_DIR__ __ETC_DIR__ __APP_DIR__
+
+[Install]
+WantedBy=multi-user.target

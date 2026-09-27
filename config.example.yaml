@@ -1,0 +1,137 @@
+# ==========================================================================
+#  超星学习通 · 服务端自动化配置
+#  复制为 config.yaml 后按需修改：python -m server.cli init
+# ==========================================================================
+
+server:
+  # 运行数据目录（Cookie / 缓存 / 日志 / SQLite 状态库都在这里）
+  # 相对路径以本配置文件所在目录为基准
+  data_dir: ./data
+  # 控制台日志级别：TRACE / DEBUG / INFO / WARNING / ERROR
+  log_level: INFO
+  # 定时任务的时区
+  timezone: Asia/Shanghai
+  # 同时运行的账号数量上限（同一 IP 建议不超过 2，降低风控概率）
+  max_concurrent_accounts: 1
+  # 单账号单次运行的硬超时（分钟），到点直接终止子进程
+  run_timeout_minutes: 360
+  # 运行失败后自动重试次数与重试间隔（分钟）
+  retry_on_failure: 1
+  retry_delay_minutes: 30
+  # Web 控制台（网页输入账号密码、并行刷课、实时日志）
+  # 打开后即可用网页录入账号，此时下面的 accounts 可以留空
+  web_enabled: true
+  web_host: 127.0.0.1
+  web_port: 8765
+  # 访问令牌：部署脚本会自动生成随机令牌并打印带 token 的地址
+  # 非空时访问需带 ?token=xxx，或用 X-Token / Authorization: Bearer 头
+  web_token: ""
+  # 网页端同时运行的任务数上限（多账号并行）
+  web_max_parallel_tasks: 8
+
+# --------------------------------------------------------------------------
+# 所有账号的默认学习参数，账号内可单独覆盖
+# --------------------------------------------------------------------------
+study:
+  speed: 1.0             # 视频倍速，1~2（超过 2 会被强制降到 2）
+  jobs: 4                # 同时处理的章节数
+  notopen_action: retry  # 遇到未开放章节：retry=等它开放继续重试 / continue=直接跳过
+  retry_interval: 1.0    # 章节重试间隔（秒）
+  work_max_retries: 3    # 章节检测答错后自动重做次数（配合 AI 反馈重答）
+  add_learning_count: false   # 是否刷完课后额外增加章节学习次数
+  target_count: 100           # 章节学习次数目标
+  auto_sign: false            # 是否尝试自动签到（普通签到有效，手势/位置签到尽力而为）
+  skip_finished: true         # 跳过已完成任务点
+  include_courses: []         # 只刷这些课程ID（留空=全部）。用 `courses` 命令查看ID
+  exclude_courses: []         # 排除这些课程ID
+
+# --------------------------------------------------------------------------
+# 答题（题库）配置
+#   providers 按顺序回退：前一个没搜到就会问下一个
+#   推荐：AI（DeepSeek）优先，遇到图片题/新题也不至于空手
+# --------------------------------------------------------------------------
+answer:
+  # 是否提交答案：
+  #   false = 只保存不提交（最安全，需自己到学习通确认提交，但章节检测不提交会卡住后续章节）
+  #   true  = 达到覆盖率后自动提交（无人值守必须为 true）
+  submit: true
+  # 最低题库覆盖率：低于该比例时只保存不提交（submit=true 时同样生效）
+  cover_rate: 0.6
+  # 每道题的搜题间隔（秒），太快容易被题库限流
+  delay: 1.0
+  # 启动时是否测试大模型连通性（只对 AI / SiliconFlow 生效）
+  check_llm_connection: true
+  true_list: [正确, 对, √, 是]
+  false_list: [错误, 错, ×, 否, 不对, 不正确]
+  providers:
+    - type: AI
+      base_url: https://api.deepseek.com/v1
+      key: sk-替换成你自己的DeepSeek密钥
+      model: deepseek-chat
+      min_interval_seconds: 3
+      # http_proxy: http://127.0.0.1:7890
+    # 可选：GO题题库（免费额度有限）
+    # - type: TikuGo
+    #   authorization: ""
+    #   min_interval: 1.0
+    # 可选：言溪题库（需 tokens，付费）
+    # - type: TikuYanxi
+    #   tokens: "token1,token2"
+    # 可选：自建 tikuAdapter
+    # - type: TikuAdapter
+    #   url: http://127.0.0.1:5000/search
+
+# --------------------------------------------------------------------------
+# 通知（全局默认，账号内可覆盖）
+#   provider: none / serverchan / bark / telegram / dingtalk / qmsg / webhook
+# --------------------------------------------------------------------------
+notify:
+  provider: none
+  key: ""                     # Server酱 SendKey 或钉钉 access_token
+  url: ""                     # Bark / Qmsg / Telegram 完整地址
+  webhook_url: ""             # 自定义 Webhook
+  telegram_bot_token: ""
+  telegram_chat_id: ""
+  on_success: true            # 成功是否通知
+  on_failure: true            # 失败是否通知
+
+# --------------------------------------------------------------------------
+# 账号列表
+#   密码安全：优先用 password_env（推荐，配合 .env / systemd EnvironmentFile）
+#   也可用 password_file 指向仅 root 可读的文件
+# --------------------------------------------------------------------------
+accounts:
+  # 只用网页控制台时，可以整段删掉（或留一个账号用于定时任务）
+  - name: main                      # 账号昵称，用于数据目录与日志，建议用英文
+    username: "13800000000"         # 学习通手机号
+    password: "替换成密码"           # 也可写 password_env: CHAOXING_MAIN_PASSWORD
+    enabled: true
+    use_cookies: false              # true 表示只用 cookies.txt 登录（先用 login 命令保存）
+    schedule: "0 8 * * *"           # 每天 08:00 执行（分 时 日 月 周），留空则只手动运行
+    tags: [主账号]
+
+    # 该账号的答题覆盖（不写则用全局 answer 段）
+    # answer:
+    #   submit: true
+    #   cover_rate: 0.5
+    #   providers:
+    #     - type: AI
+    #       base_url: https://api.deepseek.com/v1
+    #       key: sk-xxx
+    #       model: deepseek-chat
+
+    # 该账号的学习覆盖（不写则用全局 study 段）
+    # study:
+    #   include_courses: ["2151141", "189191"]
+    #   speed: 1.5
+
+    # 该账号的通知覆盖
+    # notify:
+    #   provider: serverchan
+    #   key: SCTxxxxxxxx
+
+  # - name: second
+  #   username: "13900000000"
+  #   password_env: CHAOXING_SECOND_PASSWORD
+  #   enabled: false
+  #   schedule: "30 20 * * *"       # 每天 20:30

@@ -1,0 +1,45 @@
+# 两个服务共用同一份代码与数据目录：
+#   chaoxing-web   网页控制台（浏览器里输入账号密码 → 并行刷课）
+#   chaoxing-serve 定时调度（config.yaml 里 accounts 段的 cron 账号）
+services:
+  chaoxing-web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: chaoxing-server:latest
+    container_name: chaoxing-web
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      CHAOXING_DATA_DIR: /data
+      CHAOXING_MAIN_PASSWORD: ${CHAOXING_MAIN_PASSWORD:-}
+    volumes:
+      - ../config.yaml:/config/config.yaml:ro
+      - ../data:/data
+    ports:
+      - "8765:8765"
+    command: ["--config", "/config/config.yaml", "web", "--host", "0.0.0.0", "--port", "8765"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  chaoxing-serve:
+    image: chaoxing-server:latest
+    container_name: chaoxing-serve
+    depends_on: [chaoxing-web]
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      CHAOXING_DATA_DIR: /data
+      CHAOXING_MAIN_PASSWORD: ${CHAOXING_MAIN_PASSWORD:-}
+    volumes:
+      - ../config.yaml:/config/config.yaml:ro
+      - ../data:/data
+    command: ["--config", "/config/config.yaml", "serve"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
