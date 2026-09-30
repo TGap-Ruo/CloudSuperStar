@@ -120,6 +120,15 @@
   .modal { position: fixed; inset: 0; background: rgba(15,18,24,.55);
            display: flex; align-items: center; justify-content: center; z-index: 100; }
   .modal .card { width: 380px; }
+  .modal .card.wide { width: 660px; max-width: 94vw; max-height: 86vh;
+                      display: flex; flex-direction: column; }
+  .course-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+                 border-bottom: 1px solid var(--border); cursor: pointer; border-radius: 6px; }
+  .course-item:hover { background: rgba(37,99,235,.06); }
+  .course-item input { width: 16px; height: 16px; flex: none; accent-color: var(--primary); }
+  .course-title { flex: 1; font-size: 13px; }
+  .course-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .pill.selecting { background: rgba(217,119,6,.16); color: #b45309; }
   code { background: rgba(127,127,127,.14); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
   @media (max-width: 1080px) { .wrap { grid-template-columns: 1fr; } .terminal { height: 380px; } }
 </style>
@@ -164,7 +173,8 @@
             <label>批量账号（每行一个，格式：账号,密码）</label>
             <textarea id="accountsText" placeholder="13800000001,密码1&#10;13800000002,密码2"></textarea>
           </div>
-          <div class="hint">每行一个账号，最多同时运行 {{ max_parallel }} 个任务。</div>
+          <div class="hint">每行一个账号，最多同时运行 {{ max_parallel }} 个任务。
+            批量模式会直接开始、默认刷全部课程（如需限定课程，在下面「高级设置」里填写课程 ID）。</div>
         </div>
 
         <details class="adv">
@@ -220,7 +230,8 @@
 
         <button class="btn btn-primary" id="startBtn" onclick="startTasks()">开始刷课</button>
         <div class="hint" style="margin-top:10px">
-          密码仅用于本次登录，写入任务私有配置（权限 600），不会显示在任务列表中。
+          点「开始刷课」会先登录并列出该账号的课程，勾选后再执行。密码只写入任务私有配置（权限 600），
+          不会显示在任务列表中。
         </div>
       </div>
     </div>
@@ -273,6 +284,29 @@
         <thead><tr><th>#</th><th>账号</th><th>开始(UTC)</th><th>状态</th><th>章节</th><th>答题命中</th><th>耗时</th><th>信息</th></tr></thead>
         <tbody id="runsBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="courseModal" style="display:none">
+  <div class="card wide">
+    <div class="card-head">
+      <span>选择要刷的课程</span>
+      <button class="btn btn-default btn-sm" onclick="closeCourseModal()">取消</button>
+    </div>
+    <div class="card-body" style="overflow-y:auto;flex:1">
+      <div class="hint" id="courseModalMeta" style="margin-bottom:10px"></div>
+      <input type="text" id="courseFilter" placeholder="搜索课程名 / 教师 / 课程ID" oninput="renderCourseList()">
+      <div style="display:flex;gap:8px;align-items:center;margin:10px 0">
+        <button class="btn btn-default btn-sm" onclick="selectAllCourses(true)">全选</button>
+        <button class="btn btn-default btn-sm" onclick="selectAllCourses(false)">全不选</button>
+        <span class="hint" id="courseCount"></span>
+      </div>
+      <div id="courseListBox"></div>
+    </div>
+    <div class="card-body" style="border-top:1px solid var(--border)">
+      <button class="btn btn-primary" id="confirmCoursesBtn" onclick="confirmCourses()">开始刷课</button>
+      <div class="hint" style="margin-top:8px">一门都不勾也可以直接开始，等于刷全部课程。</div>
     </div>
   </div>
 </div>
@@ -354,17 +388,18 @@ function collectOptions() {
 }
 
 async function startTasks() {
-  const singleVisible = document.getElementById('paneSingle').style.display !== 'none';
-  const payload = collectOptions();
-  if (singleVisible) {
-    payload.username = document.getElementById('username').value.trim();
-    payload.password = document.getElementById('password').value;
-    if (!payload.username) { toast('请输入账号', 'error'); return; }
-    if (!payload.password) { toast('请输入密码', 'error'); return; }
-  } else {
-    payload.accounts_text = document.getElementById('accountsText').value;
-    if (!payload.accounts_text.trim()) { toast('请粘贴账号列表', 'error'); return; }
+  // 单个账号：先登录并读取课程列表，让用户勾选后再开始
+  if (document.getElementById('paneSingle').style.display !== 'none') {
+    await prepareCourses();
+    return;
   }
+  await startTasksDirect();
+}
+
+async function startTasksDirect() {
+  const payload = collectOptions();
+  payload.accounts_text = document.getElementById('accountsText').value;
+  if (!payload.accounts_text.trim()) { toast('请粘贴账号列表', 'error'); return; }
 
   const btn = document.getElementById('startBtn');
   btn.disabled = true;
@@ -375,7 +410,6 @@ async function startTasks() {
     const errors = data.errors || [];
     toast('已启动 ' + started.length + ' 个任务' + (errors.length ? '，' + errors.length + ' 个失败' : ''), 'ok');
     errors.slice(0, 3).forEach(function (e) { toast(e.username + ': ' + e.error, 'error'); });
-    document.getElementById('password').value = '';
     await loadTasks();
     if (started.length) selectTask(started[0].id);
   } catch (err) {
@@ -386,8 +420,137 @@ async function startTasks() {
   }
 }
 
+/* ───────────── 课程选择弹窗 ───────────── */
+let preparedTask = null;
+let selectedCourses = new Set();
+
+async function prepareCourses() {
+  const payload = collectOptions();
+  delete payload.course_ids;                      // 课程在弹窗里选，这里不预填给后端
+  payload.username = document.getElementById('username').value.trim();
+  payload.password = document.getElementById('password').value;
+  if (!payload.username) { toast('请输入账号', 'error'); return; }
+  if (!payload.password) { toast('请输入密码', 'error'); return; }
+
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  btn.textContent = '正在登录并读取课程…';
+  try {
+    const data = await api('/api/courses', { method: 'POST', body: JSON.stringify(payload) });
+    preparedTask = data;
+    selectedCourses = new Set();
+    openCourseModal();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '开始刷课';
+  }
+}
+
+function openCourseModal() {
+  document.getElementById('courseModal').style.display = 'flex';
+  const courses = preparedTask.courses || [];
+  document.getElementById('courseModalMeta').textContent =
+    '账号 ' + preparedTask.username + ' · 共读取到 ' + courses.length + ' 门课程，勾选后开始刷课';
+  document.getElementById('courseFilter').value = '';
+  // 高级设置里已经填过课程 ID 的话，自动勾上对应课程
+  const preset = (document.getElementById('courseIds').value || '')
+    .split(/[,，\s]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  if (preset.length) {
+    courses.forEach(function (c) {
+      if (preset.indexOf(c.course_id) >= 0) selectedCourses.add(c.course_id);
+    });
+  }
+  renderCourseList();
+}
+
+function renderCourseList() {
+  const box = document.getElementById('courseListBox');
+  const courses = (preparedTask && preparedTask.courses) || [];
+  if (!courses.length) {
+    box.innerHTML = '<div class="empty">该账号下没有读取到课程，可直接开始（会按全部课程处理）</div>';
+    updateCourseCount();
+    return;
+  }
+  const keyword = document.getElementById('courseFilter').value.trim().toLowerCase();
+  const list = courses.filter(function (c) {
+    if (!keyword) return true;
+    return String(c.title || '').toLowerCase().indexOf(keyword) >= 0
+      || String(c.teacher || '').toLowerCase().indexOf(keyword) >= 0
+      || String(c.course_id || '').indexOf(keyword) >= 0;
+  });
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">没有匹配的课程</div>';
+    updateCourseCount();
+    return;
+  }
+  box.innerHTML = list.map(function (c) {
+    const checked = selectedCourses.has(c.course_id) ? ' checked' : '';
+    return '<label class="course-item">'
+      + '<input type="checkbox"' + checked + ' onchange="toggleCourse(\'' + c.course_id + '\', this.checked)">'
+      + '<span class="course-title">' + esc(c.title || '(未命名课程)') + '</span>'
+      + '<span class="course-meta">' + esc(c.teacher || '') + (c.teacher ? ' · ' : '') + esc(c.course_id) + '</span>'
+      + '</label>';
+  }).join('');
+  updateCourseCount();
+}
+
+function toggleCourse(courseId, checked) {
+  if (checked) { selectedCourses.add(courseId); } else { selectedCourses.delete(courseId); }
+  updateCourseCount();
+}
+
+function selectAllCourses(all) {
+  selectedCourses = new Set();
+  if (all) {
+    ((preparedTask && preparedTask.courses) || []).forEach(function (c) { selectedCourses.add(c.course_id); });
+  }
+  renderCourseList();
+}
+
+function updateCourseCount() {
+  const total = ((preparedTask && preparedTask.courses) || []).length;
+  document.getElementById('courseCount').textContent = '已选 ' + selectedCourses.size + ' / 共 ' + total;
+}
+
+async function confirmCourses() {
+  if (!preparedTask) return;
+  const taskId = preparedTask.task_id;
+  const ids = Array.from(selectedCourses);
+  const btn = document.getElementById('confirmCoursesBtn');
+  btn.disabled = true;
+  btn.textContent = '启动中…';
+  try {
+    await api('/api/tasks/' + taskId + '/start', {
+      method: 'POST',
+      body: JSON.stringify({ course_ids: ids })
+    });
+    preparedTask = null;
+    document.getElementById('courseModal').style.display = 'none';
+    document.getElementById('password').value = '';
+    toast(ids.length ? ('已开始刷 ' + ids.length + ' 门课程') : '已开始刷全部课程', 'ok');
+    await loadTasks();
+    selectTask(taskId);
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '开始刷课';
+  }
+}
+
+async function closeCourseModal() {
+  document.getElementById('courseModal').style.display = 'none';
+  if (!preparedTask) return;
+  const taskId = preparedTask.task_id;
+  preparedTask = null;
+  try { await api('/api/tasks/' + taskId, { method: 'DELETE' }); } catch (e) { /* 忽略 */ }
+  loadTasks();
+}
+
 /* ───────────── 任务列表 ───────────── */
-const STATUS_LABEL = { running: '运行中', finished: '已完成', failed: '失败', stopped: '已停止' };
+const STATUS_LABEL = { selecting: '选择课程中', running: '运行中', finished: '已完成', failed: '失败', stopped: '已停止' };
 
 async function loadTasks() {
   try {

@@ -40,6 +40,9 @@ from server.store import read_report
 
 MAX_BUFFER_LINES = 5000
 TERMINAL_STATUSES = {"finished", "failed", "stopped"}
+SELECTING_STATUS = "selecting"
+MAX_SELECTING_TASKS = 10
+LOGIN_TIMEOUT_SECONDS = 120
 
 # 日志里的 ANSI 颜色码：网页终端与前缀下载的日志都不需要它们
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -64,9 +67,11 @@ _TASK_FIELDS = {
     "options",
     "summary",
     "report_file",
+    "courses",
 }
 
 CommandBuilder = Callable[["TaskRecord"], tuple[list[str], Path, dict[str, str]]]
+CoursesProvider = Callable[["TaskRecord"], tuple[bool, list[dict[str, Any]], str]]
 
 
 class TaskError(RuntimeError):
@@ -93,6 +98,7 @@ class TaskRecord:
     options: dict[str, Any] = field(default_factory=dict)
     summary: dict[str, Any] | None = None
     report_file: str = ""
+    courses: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """对外输出（不含任何密码信息）。"""
@@ -109,6 +115,7 @@ class TaskRecord:
             "options": dict(self.options),
             "summary": self.summary,
             "has_log": bool(self.log_file and Path(self.log_file).is_file()),
+            "courses": list(self.courses),
         }
 
 
@@ -123,6 +130,7 @@ class TaskManager:
         data_paths: DataPaths | None = None,
         max_parallel: int | None = None,
         command_builder: CommandBuilder | None = None,
+        courses_provider: CoursesProvider | None = None,
     ):
         self.config_path = Path(config_path).expanduser().resolve()
         self.config = config
@@ -131,6 +139,7 @@ class TaskManager:
         self.index_file = self.task_root / "index.json"
         self.max_parallel = max_parallel or config.server.web_max_parallel_tasks
         self.command_builder = command_builder
+        self.courses_provider = courses_provider or self._default_courses_provider
 
         self._tasks: dict[str, TaskRecord] = {}
         self._buffers: dict[str, deque[str]] = {}
@@ -193,6 +202,10 @@ class TaskManager:
         with self._lock:
             return sum(1 for r in self._tasks.values() if r.status == "running")
 
+    def selecting_count(self) -> int:
+        with self._lock:
+            return sum(1 for r in self._tasks.values() if r.status == SELECTING_STATUS)
+
     def stats(self) -> dict[str, int]:
         with self._lock:
             records = list(self._tasks.values())
@@ -244,6 +257,111 @@ class TaskManager:
         use_cookies: bool = False,
         cookie: str = "",
     ) -> TaskRecord:
+        """直接启动（不做课程选择）：批量模式与命令行使用。"""
+        record = self._create_record(
+            username,
+            password,
+            display_name=display_name,
+            course_ids=course_ids,
+            speed=speed,
+            jobs=jobs,
+            submit=submit,
+            cover_rate=cover_rate,
+            work_max_retries=work_max_retries,
+            use_cookies=use_cookies,
+            cookie=cookie,
+        )
+        try:
+            command, cwd, env = self._build_command(record)
+            self._spawn(record, command, cwd, env)
+        except Exception:
+            self._discard(record)
+            raise
+        self._save_index()
+        return record
+
+    def prepare_task(
+        self,
+        username: str,
+        password: str,
+        *,
+        display_name: str = "",
+        speed: Optional[float] = None,
+        jobs: Optional[int] = None,
+        submit: Optional[bool] = None,
+        cover_rate: Optional[float] = None,
+        work_max_retries: Optional[int] = None,
+        use_cookies: bool = False,
+        cookie: str = "",
+    ) -> tuple[TaskRecord, list[dict[str, Any]]]:
+        """登录并读取课程列表，等待用户勾选后再真正开始刷课。"""
+        record = self._create_record(
+            username,
+            password,
+            display_name=display_name,
+            course_ids=None,
+            speed=speed,
+            jobs=jobs,
+            submit=submit,
+            cover_rate=cover_rate,
+            work_max_retries=work_max_retries,
+            use_cookies=use_cookies,
+            cookie=cookie,
+        )
+        try:
+            ok, courses, error = self.courses_provider(record)
+            if not ok:
+                raise TaskError(error or "读取课程列表失败")
+            record.courses = courses
+            self._save_index()
+            return record, courses
+        except Exception:
+            self._discard(record)
+            raise
+
+    def start_prepared_task(
+        self,
+        task_id: str,
+        course_ids: Optional[list[str]] = None,
+    ) -> TaskRecord:
+        """课程选择完成后真正启动该任务（复用准备阶段保存的 Cookie）。"""
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None:
+                raise TaskError("任务不存在或已过期，请重新登录")
+            if record.status != SELECTING_STATUS:
+                raise TaskError(f"任务当前状态为 {record.status}，无法启动")
+            if self.running_count() >= self.max_parallel:
+                raise TaskError(
+                    f"同时运行的任务已达上限（{self.max_parallel} 个），请先等待或停止部分任务"
+                )
+
+        selected = [str(item).strip() for item in (course_ids or []) if str(item).strip()]
+        record.options["course_ids"] = selected
+        try:
+            self._update_task_config(record, selected)
+            command, cwd, env = self._build_command(record)
+            self._spawn(record, command, cwd, env)
+        except Exception as exc:
+            raise TaskError(f"启动失败: {exc}") from exc
+        self._save_index()
+        return record
+
+    def _create_record(
+        self,
+        username: str,
+        password: str,
+        *,
+        display_name: str = "",
+        course_ids: Optional[list[str]] = None,
+        speed: Optional[float] = None,
+        jobs: Optional[int] = None,
+        submit: Optional[bool] = None,
+        cover_rate: Optional[float] = None,
+        work_max_retries: Optional[int] = None,
+        use_cookies: bool = False,
+        cookie: str = "",
+    ) -> TaskRecord:
         username = (username or "").strip()
         if not username:
             raise TaskError("请输入账号")
@@ -255,6 +373,10 @@ class TaskManager:
                 raise TaskError(
                     f"同时运行的任务已达上限（{self.max_parallel} 个），请先等待或停止部分任务"
                 )
+            if self.selecting_count() >= MAX_SELECTING_TASKS:
+                raise TaskError(
+                    f"待选择课程的任务过多（{MAX_SELECTING_TASKS} 个），请先处理或等待其过期"
+                )
             task_id = uuid.uuid4().hex[:12]
             account = sanitize_account_name(f"web-{task_id}")
             record = TaskRecord(
@@ -262,6 +384,7 @@ class TaskManager:
                 account=account,
                 username=username,
                 display_name=(display_name or username).strip() or username,
+                status=SELECTING_STATUS,
                 options={
                     "course_ids": course_ids or [],
                     "speed": speed,
@@ -288,16 +411,20 @@ class TaskManager:
                 cookie=cookie,
             )
             record.config_file = str(config_file)
-            command, cwd, env = self._build_command(record)
-            self._spawn(record, command, cwd, env)
         except Exception:
-            with self._lock:
-                self._tasks.pop(task_id, None)
-            shutil.rmtree(self.task_root / task_id, ignore_errors=True)
+            self._discard(record)
             raise
 
         self._save_index()
         return record
+
+    def _discard(self, record: TaskRecord) -> None:
+        """创建过程中失败时清理记录与目录。"""
+        with self._lock:
+            self._tasks.pop(record.id, None)
+        shutil.rmtree(self.task_root / record.id, ignore_errors=True)
+        shutil.rmtree(self.data_paths.account(record.account).root, ignore_errors=True)
+        self._save_index()
 
     def _write_task_config(
         self,
@@ -391,11 +518,96 @@ class TaskManager:
             "--account",
             record.account,
         ]
+        return command, project_root(), self._child_env()
+
+    def _child_env(self) -> dict[str, str]:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         env["TQDM_DISABLE"] = "1"
-        return command, project_root(), env
+        return env
+
+    def _default_courses_provider(
+        self, record: TaskRecord
+    ) -> tuple[bool, list[dict[str, Any]], str]:
+        """调用 server.login_helper 子进程：登录 + 读取课程列表（不刷课）。"""
+        command = [
+            sys.executable,
+            "-m",
+            "server.login_helper",
+            "--config",
+            record.config_file,
+            "--account",
+            record.account,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(project_root()),
+                env=self._child_env(),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=LOGIN_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return False, [], f"登录或读取课程超时（>{LOGIN_TIMEOUT_SECONDS}s），请稍后重试"
+        except Exception as exc:  # noqa: BLE001
+            return False, [], f"登录子进程启动失败: {exc}"
+
+        payload = None
+        for line in reversed((completed.stdout or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    payload = None
+                if payload is not None:
+                    break
+
+        if payload is None:
+            tail = (completed.stderr or completed.stdout or "").strip().splitlines()
+            detail = tail[-1][:200] if tail else f"退出码 {completed.returncode}"
+            return False, [], f"读取课程失败：{detail}"
+        if not payload.get("ok"):
+            return False, [], str(payload.get("error") or "登录失败")
+
+        courses: list[dict[str, Any]] = []
+        for item in payload.get("courses") or []:
+            if not isinstance(item, dict):
+                continue
+            courses.append(
+                {
+                    "course_id": str(item.get("course_id", "")),
+                    "clazz_id": str(item.get("clazz_id", "")),
+                    "title": str(item.get("title", "")),
+                    "teacher": str(item.get("teacher", "")),
+                }
+            )
+        return True, courses, ""
+
+    def _update_task_config(self, record: TaskRecord, course_ids: list[str]) -> None:
+        """把用户勾选的课程写回任务配置；准备阶段已拿到 Cookie 就复用它。"""
+        path = Path(record.config_file)
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        accounts = raw.get("accounts") or []
+        if accounts:
+            account = dict(accounts[0])
+            study = dict(account.get("study") or {})
+            study["include_courses"] = list(course_ids)
+            account["study"] = study
+            if self.data_paths.account(record.account).cookies.is_file():
+                account["use_cookies"] = True
+            raw["accounts"] = [account]
+        path.write_text(
+            yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def _spawn(self, record: TaskRecord, command: list[str], cwd: Path, env: dict[str, str]) -> None:
         Path(record.log_file).parent.mkdir(parents=True, exist_ok=True)
@@ -420,6 +632,7 @@ class TaskManager:
             self._processes[record.id] = process
             self._handles[record.id] = handle
             self._buffers[record.id] = deque(maxlen=MAX_BUFFER_LINES)
+            record.status = "running"
 
         threading.Thread(
             target=self._pump_output,

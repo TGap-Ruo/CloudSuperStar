@@ -272,6 +272,53 @@ def create_app(
             return jsonify({"error": errors[0]["error"], "errors": errors}), 400
         return jsonify({"started": started, "errors": errors, "stats": manager.stats()}), 201
 
+    @app.post("/api/courses")
+    def api_prepare_courses() -> Response:
+        """登录并读取课程列表（不刷课），返回 task_id 供勾选后启动。"""
+        payload = request.get_json(silent=True) or {}
+        accounts = _parse_accounts(payload)
+        if len(accounts) != 1:
+            return jsonify({"error": "读取课程列表请只填一个账号（批量模式默认刷全部课程）"}), 400
+
+        account = accounts[0]
+        try:
+            record, courses = manager.prepare_task(
+                account["username"],
+                account["password"],
+                speed=_optional_float(payload, "speed", 1.0, 2.0),
+                jobs=_optional_int(payload, "jobs", 1, 16),
+                submit=None if payload.get("submit") is None else bool(payload.get("submit")),
+                cover_rate=_optional_float(payload, "cover_rate", 0.0, 1.0),
+                work_max_retries=_optional_int(payload, "work_max_retries", 0, 10),
+                use_cookies=bool(payload.get("use_cookies")),
+                cookie=str(payload.get("cookie", "") or ""),
+            )
+        except TaskError as exc:
+            return jsonify({"error": str(exc), "login_failed": True}), 400
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("读取课程列表失败")
+            return jsonify({"error": f"读取课程列表失败: {exc}"}), 500
+
+        return jsonify(
+            {
+                "task_id": record.id,
+                "username": record.username,
+                "courses": courses,
+                "count": len(courses),
+            }
+        )
+
+    @app.post("/api/tasks/<task_id>/start")
+    def api_start_prepared(task_id: str) -> Response:
+        """课程勾选完成后启动任务。course_ids 为空表示刷全部课程。"""
+        payload = request.get_json(silent=True) or {}
+        course_ids = _parse_course_ids(payload.get("course_ids"))
+        try:
+            record = manager.start_prepared_task(task_id, course_ids)
+        except TaskError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"started": record.to_dict(), "stats": manager.stats()})
+
     @app.post("/api/tasks/<task_id>/stop")
     def api_stop_task(task_id: str) -> Response:
         ok, message = manager.stop_task(task_id)

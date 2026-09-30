@@ -174,3 +174,86 @@ def test_no_token_mode_allows_access(config_path, server_config):
     manager = TaskManager(config_path, server_config, command_builder=_script_builder("pass"))
     app = create_app(config_path, token="", task_manager=manager)
     assert app.test_client().get("/api/tasks").status_code == 200
+
+
+# ─────────────────────────── 课程选择流程 ───────────────────────────
+
+FAKE_COURSES = [
+    {"course_id": "2151141", "clazz_id": "107515845", "title": "形势与政策", "teacher": "张老师"},
+    {"course_id": "189191", "clazz_id": "107000001", "title": "大学英语（三）", "teacher": "李老师"},
+]
+
+
+@pytest.fixture
+def select_app(config_path, server_config):
+    manager = TaskManager(
+        config_path,
+        server_config,
+        command_builder=_script_builder("print('started')\nprint('done')"),
+        courses_provider=lambda record: (True, FAKE_COURSES, ""),
+    )
+    app = create_app(config_path, token="", task_manager=manager)
+    app.config.update(TESTING=True)
+    return app
+
+
+def test_list_courses_endpoint(select_app):
+    client = select_app.test_client()
+    response = client.post("/api/courses", json={"username": "138", "password": "p"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["count"] == 2
+    assert [c["title"] for c in data["courses"]] == ["形势与政策", "大学英语（三）"]
+    assert data["task_id"]
+
+    # 准备阶段的任务出现在列表里，状态为「选择课程中」
+    tasks = client.get("/api/tasks").get_json()["tasks"]
+    assert tasks[0]["status"] == "selecting"
+
+
+def test_start_prepared_task_endpoint(select_app):
+    client = select_app.test_client()
+    prepared = client.post("/api/courses", json={"username": "138", "password": "p"}).get_json()
+    task_id = prepared["task_id"]
+
+    response = client.post(f"/api/tasks/{task_id}/start", json={"course_ids": ["189191"]})
+    assert response.status_code == 200
+    assert response.get_json()["started"]["status"] == "running"
+
+    for _ in range(100):
+        detail = client.get(f"/api/tasks/{task_id}").get_json()
+        if detail["status"] != "running":
+            break
+        time.sleep(0.1)
+    assert detail["status"] == "finished"
+
+
+def test_cancel_prepared_task_endpoint(select_app):
+    client = select_app.test_client()
+    prepared = client.post("/api/courses", json={"username": "138", "password": "p"}).get_json()
+    assert client.delete(f"/api/tasks/{prepared['task_id']}").status_code == 200
+    assert client.get(f"/api/tasks/{prepared['task_id']}").status_code == 404
+
+
+def test_list_courses_requires_single_account(select_app):
+    client = select_app.test_client()
+    response = client.post(
+        "/api/courses", json={"accounts_text": "13800000001,a\n13800000002,b"}
+    )
+    assert response.status_code == 400
+    assert "一个账号" in response.get_json()["error"]
+
+
+def test_list_courses_reports_login_error(config_path, server_config):
+    manager = TaskManager(
+        config_path,
+        server_config,
+        command_builder=_script_builder("pass"),
+        courses_provider=lambda record: (False, [], "LoginError: 用户名或密码错误"),
+    )
+    app = create_app(config_path, token="", task_manager=manager)
+    response = app.test_client().post(
+        "/api/courses", json={"username": "138", "password": "wrong"}
+    )
+    assert response.status_code == 400
+    assert "用户名或密码错误" in response.get_json()["error"]

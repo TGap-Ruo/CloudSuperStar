@@ -185,3 +185,103 @@ def test_deepseek_status_without_key(tmp_path, config_path):
     Path(config_path).write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     config = load_config(config_path)
     assert deepseek_status(config)["configured"] is False
+
+
+# ─────────────────────── 课程选择流程（prepare → start）───────────────────
+
+SAMPLE_COURSES = [
+    {"course_id": "2151141", "clazz_id": "107515845", "title": "形势与政策", "teacher": "张老师"},
+    {"course_id": "189191", "clazz_id": "107000001", "title": "大学英语（三）", "teacher": "李老师"},
+]
+
+
+def _manager_with_courses(server_config, config_path, courses=None, ok=True, error="登录失败"):
+    def provider(record):
+        return ok, (courses if courses is not None else SAMPLE_COURSES), error
+
+    return TaskManager(
+        config_path,
+        server_config,
+        command_builder=_script_builder("print('started')"),
+        courses_provider=provider,
+    )
+
+
+def test_prepare_task_returns_courses(server_config, config_path):
+    manager = _manager_with_courses(server_config, config_path)
+    record, courses = manager.prepare_task("13800000000", "secret")
+
+    assert record.status == "selecting"
+    assert [c["title"] for c in courses] == ["形势与政策", "大学英语（三）"]
+    # 准备阶段不启动进程
+    assert manager.stats()["running"] == 0
+    # 课程列表会回传给前端
+    assert manager.get_task(record.id).to_dict()["courses"][0]["course_id"] == "2151141"
+
+
+def test_prepare_task_login_failure_cleans_up(server_config, config_path):
+    manager = _manager_with_courses(server_config, config_path, ok=False, error="用户名或密码错误")
+    with pytest.raises(TaskError, match="用户名或密码错误"):
+        manager.prepare_task("13800000000", "bad")
+    assert manager.list_tasks() == []
+    # 任务目录与账号目录都应被清理
+    assert [p for p in manager.task_root.iterdir() if p.is_dir()] == []
+    leftover = list(server_config.data_paths().accounts_dir.glob("web-*"))
+    assert leftover == []
+
+
+def test_start_prepared_task_writes_selected_courses(server_config, config_path):
+    manager = _manager_with_courses(server_config, config_path)
+    record, _ = manager.prepare_task("13800000000", "secret")
+    # 模拟 login_helper 登录成功后落下 Cookie，随后启动时应复用
+    (server_config.data_paths().account(record.account).cookies).write_text(
+        "_uid=1; fid=2", encoding="utf-8"
+    )
+
+    started = manager.start_prepared_task(record.id, ["189191"])
+    assert started.status == "running"
+    assert started.options["course_ids"] == ["189191"]
+
+    # 写回任务配置：只保留勾选的课程，并复用准备阶段的 Cookie
+    config = load_config(Path(record.config_file))
+    assert config.accounts[0].study.include_courses == ["189191"]
+    assert config.accounts[0].use_cookies is True
+
+    _wait_status(manager, record.id)
+
+
+def test_start_prepared_without_selection_means_all_courses(server_config, config_path):
+    manager = _manager_with_courses(server_config, config_path)
+    record, _ = manager.prepare_task("13800000000", "secret")
+    manager.start_prepared_task(record.id, [])
+    config = load_config(Path(record.config_file))
+    assert config.accounts[0].study.include_courses == []
+    _wait_status(manager, record.id)
+
+
+def test_prepared_task_can_be_cancelled(server_config, config_path):
+    manager = _manager_with_courses(server_config, config_path)
+    record, _ = manager.prepare_task("13800000000", "secret")
+    ok, message = manager.delete_task(record.id)
+    assert ok, message
+    assert manager.get_task(record.id) is None
+    assert not (manager.task_root / record.id).exists()
+
+
+def test_cannot_start_prepared_twice(server_config, config_path):
+    manager = _manager_with_courses(server_config, config_path)
+    record, _ = manager.prepare_task("13800000000", "secret")
+    manager.start_prepared_task(record.id, ["2151141"])
+    with pytest.raises(TaskError, match="无法启动"):
+        manager.start_prepared_task(record.id, ["189191"])
+    manager.stop_task(record.id)
+
+
+def test_selecting_tasks_are_limited(server_config, config_path, monkeypatch):
+    import server.tasks as tasks_module
+
+    monkeypatch.setattr(tasks_module, "MAX_SELECTING_TASKS", 1)
+    manager = _manager_with_courses(server_config, config_path)
+    manager.prepare_task("13800000001", "secret")
+    with pytest.raises(TaskError, match="待选择课程的任务过多"):
+        manager.prepare_task("13800000002", "secret")
