@@ -56,9 +56,11 @@ MAX_PARALLEL="8"
 MODEL="deepseek-chat"
 BASE_URL="https://api.deepseek.com/v1"
 DEEPSEEK_KEY="${DEEPSEEK_KEY:-}"
-REPO="${REPO:-tgap/cloud-super-star}"
+REPO="${REPO:-}"                        # --repo 会同时覆盖两个托管站
+REPO_GITEE="${REPO_GITEE:-${REPO:-tgap/cloud-super-star}}"
+REPO_GITHUB="${REPO_GITHUB:-${REPO:-TGap-Ruo/CloudSuperStar}}"
 BRANCH="${BRANCH:-main}"
-GIT_HOST="${GIT_HOST:-gitee}"
+GIT_HOST="${GIT_HOST:-auto}"
 APT_MIRROR="${APT_MIRROR:-auto}"
 PIP_CANDIDATES=()
 PIP_INDEX_CHOSEN=""
@@ -95,8 +97,8 @@ usage() {
   --max-parallel N     同时运行任务数上限，默认 8
   --apt-mirror M       apt 源: auto/aliyun/tsinghua/none（默认 auto）
   --pip-index URL      pip 源，默认清华镜像
-  --repo OWNER/NAME    代码仓库，默认 tgap/cloud-super-star
-  --gitee / --github   代码来源，默认 gitee
+  --repo OWNER/NAME    同时覆盖两个托管站的仓库名（默认 Gitee: tgap/cloud-super-star，GitHub: TGap-Ruo/CloudSuperStar）
+  --gitee / --github   指定优先代码来源，默认 auto（自动探测，两个源都会尝试）
   --branch NAME        分支，默认 main
   --skip-key-test      跳过 Key 联网校验
   --no-firewall        不修改 ufw
@@ -224,6 +226,53 @@ install_python_deps() {
 }
 
 # 国内服务器把 apt 源换成国内镜像；失败会自动还原，绝不把机器搞成装不了包的状态。
+# ─────────────────────────── 源码下载（Gitee / GitHub 双源）───────────────
+repo_for_host() {
+  case "$1" in
+    gitee)  echo "${REPO_GITEE}" ;;
+    github) echo "${REPO_GITHUB}" ;;
+    *) return 1 ;;
+  esac
+}
+
+zip_url_for_host() {
+  local host="$1" repo
+  repo="$(repo_for_host "${host}")" || return 1
+  case "${host}" in
+    gitee)  echo "https://gitee.com/${repo}/repository/archive/${BRANCH}.zip" ;;
+    github) echo "https://github.com/${repo}/archive/refs/heads/${BRANCH}.zip" ;;
+  esac
+}
+
+order_hosts() {
+  # 显式指定则按指定顺序；auto 时用短探测决定顺序（探测不准也仍会依次尝试）
+  if [[ "${GIT_HOST}" == "gitee" || "${GIT_HOST}" == "github" ]]; then
+    echo "${GIT_HOST}"
+    if [[ "${GIT_HOST}" == "gitee" ]]; then echo "github"; else echo "gitee"; fi
+    return 0
+  fi
+  local g h
+  g="$(http_code_of "https://gitee.com/")"
+  h="$(http_code_of "https://github.com/")"
+  if [[ "${g}" == "000" && "${h}" != "000" ]]; then
+    echo "github"
+    echo "gitee"
+  else
+    # 都可达或都探测失败：国内优先 Gitee，其后仍会尝试 GitHub
+    echo "gitee"
+    echo "github"
+  fi
+}
+
+try_download() {
+  # wget / curl 各试一次：两者对代理、重定向、TLS 的处理不同，多一层保险
+  local url="$1" out="$2"
+  if wget -q --timeout=30 --tries=1 -O "${out}" "${url}" 2>/dev/null; then
+    return 0
+  fi
+  curl -fsSL --connect-timeout 10 -m 150 -o "${out}" "${url}" 2>/dev/null
+}
+
 setup_apt_mirror() {
   local want="${1:-auto}"
   [[ "${want}" == "none" ]] && return 0
@@ -363,39 +412,37 @@ if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/../server/cli.py" ]]; then
 fi
 
 if [[ -z "${SRC_ROOT}" ]]; then
-  case "${GIT_HOST}" in
-    github)
-      PRIMARY_URL="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.zip"
-      FALLBACK_URL="https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip"
-      ;;
-    gitee)
-      PRIMARY_URL="https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip"
-      FALLBACK_URL="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.zip"
-      ;;
-    *) die "不支持的代码源: ${GIT_HOST}（可选 github / gitee）" ;;
-  esac
-
+  SOURCE_HOSTS=()
+  while IFS= read -r _host; do
+    [[ -n "${_host}" ]] && SOURCE_HOSTS+=("${_host}")
+  done < <(order_hosts)
+  info "代码来源顺序: ${SOURCE_HOSTS[*]}（Gitee: ${REPO_GITEE} / GitHub: ${REPO_GITHUB}）"
   DOWNLOADED="0"
-  for url in "${PRIMARY_URL}" "${FALLBACK_URL}"; do
+  for host in "${SOURCE_HOSTS[@]}"; do
+    url="$(zip_url_for_host "${host}")" || continue
     info "下载源码: ${url}"
-    if wget -q --timeout=60 --tries=2 -O "${TMP_ROOT}/repo.zip" "${url}"; then
+    if try_download "${url}" "${TMP_ROOT}/repo.zip"; then
       DOWNLOADED="1"
       break
     fi
-    warn "该地址下载失败，尝试备用地址…"
+    warn "该地址下载失败（${host}），尝试下一个来源…"
   done
 
   if [[ "${DOWNLOADED}" != "1" ]]; then
-    warn "源码下载失败（${REPO} / ${BRANCH}）。可选办法："
-    warn "  1) 用整包下载方式重新部署（国内推荐）："
-    warn "     cd /tmp && curl -fsSL -o cx.zip https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip \\"
-    warn "       && python3 -m zipfile -e cx.zip cx && sudo bash cx/*/deploy/install.sh"
-    warn "  2) 在能联网的机器上 git clone 后把整个目录上传到服务器，然后执行："
+    warn "源码下载失败（分支 ${BRANCH}）。可选办法："
+    warn "  1) 整包下载 · 国内（Gitee）："
+    warn "     cd /tmp && curl -fsSL -o cx.zip https://gitee.com/${REPO_GITEE}/repository/archive/${BRANCH}.zip && python3 -m zipfile -e cx.zip cx && sudo bash cx/*/deploy/install.sh"
+    warn "  2) 整包下载 · 海外（GitHub）："
+    warn "     cd /tmp && curl -fsSL -o cx.zip https://github.com/${REPO_GITHUB}/archive/refs/heads/${BRANCH}.zip && python3 -m zipfile -e cx.zip cx && sudo bash cx/*/deploy/install.sh"
+    warn "  3) 在能联网的机器上 git clone 后把整个目录上传到服务器，然后执行："
     warn "     cd 项目目录 && sudo bash deploy/install.sh（会提示输入 DeepSeek Key）"
     die "无法获取源码，已退出"
   fi
 
-  unzip -q -o "${TMP_ROOT}/repo.zip" -d "${TMP_ROOT}/src" || die "解压失败"
+  mkdir -p "${TMP_ROOT}/src"
+  unzip -q -o "${TMP_ROOT}/repo.zip" -d "${TMP_ROOT}/src" 2>/dev/null \
+    || python3 -m zipfile -e "${TMP_ROOT}/repo.zip" "${TMP_ROOT}/src" \
+    || die "源码解压失败"
   CLI_FILE="$(find "${TMP_ROOT}/src" -maxdepth 3 -type f -path '*/server/cli.py' -print -quit)"
   [[ -n "${CLI_FILE}" ]] || die "源码结构不符（未找到 server/cli.py）"
   SRC_ROOT="$(dirname "$(dirname "${CLI_FILE}")")"

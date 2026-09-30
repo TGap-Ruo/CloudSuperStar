@@ -36,6 +36,25 @@ cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/reposito
 如果连 gitee.com 也访问不了（内网/无外网出口），就在能联网的机器上 `git clone`
 后把整个目录上传到服务器，然后执行 `sudo bash deploy/install.sh`。
 
+**海外服务器提示"源码下载失败"**
+
+海外机器上 Gitee 经常限速或拒绝，直接用 GitHub 整包：
+
+```bash
+cd /tmp && curl -fsSL -o cx.zip https://github.com/TGap-Ruo/CloudSuperStar/archive/refs/heads/main.zip \
+  && python3 -m zipfile -e cx.zip cx && sudo bash cx/CloudSuperStar-main/deploy/install.sh
+```
+
+或强制让脚本优先用 GitHub（避免先在 Gitee 上等一轮）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh | sudo bash -s -- --github
+```
+
+注意两个托管站的仓库名不同：Gitee 是 `tgap/cloud-super-star`，GitHub 是 `TGap-Ruo/CloudSuperStar`
+（大小写无关，但路径不同）。脚本会按站点各自的名字拼接下载地址，用 `--repo OWNER/NAME`
+可以把两个站点同时覆盖成你自己的仓库。
+
 **卡在"安装系统依赖"很久**
 
 脚本会尝试把 apt 源切成国内镜像（`--apt-mirror auto`，仅当当前是官方源且国内镜像可达时才切，

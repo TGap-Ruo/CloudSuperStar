@@ -32,7 +32,14 @@ DeepSeek API Key:
 含"刷课"字样的文件（`README.md`、`deploy/install.sh`）的 raw 链接返回 **451**，整包下载不受影响，
 而且顺带省掉一次源码下载。用 python3 解压是因为 Ubuntu 自带 python3、不保证装了 `unzip`。
 
-海外服务器（或 Gitee 不通）可以直接用 GitHub raw：
+海外服务器（或 Gitee 不通）用 GitHub 整包下载 + 本地执行：
+
+```bash
+cd /tmp && curl -fsSL -o cx.zip https://github.com/TGap-Ruo/CloudSuperStar/archive/refs/heads/main.zip \
+  && python3 -m zipfile -e cx.zip cx && sudo bash cx/CloudSuperStar-main/deploy/install.sh
+```
+
+也可以直接用 GitHub raw（脚本会自动下载源码，默认 auto 探测 Gitee/GitHub 并按各自仓库名拼接地址）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh | sudo bash
@@ -42,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy
 
 国内环境适配点：
 
-* 代码默认从 **Gitee** 下载（GitHub 作为备用地址自动重试）
+* 代码来源 `auto` 探测：Gitee（`tgap/cloud-super-star`）与 GitHub（`TGap-Ruo/CloudSuperStar`）会按各自正确的仓库名依次尝试，任一成功即继续；每个地址先用 wget、失败再用 curl 重试
 * pip 默认走清华镜像；apt 源在检测到官方源且国内镜像可达时自动切换为阿里云（失败自动还原）
 * Key 支持交互式输入，不必出现在命令行历史里
 * 时间显示与定时任务时区可用 `--timezone Asia/Shanghai` 指定
