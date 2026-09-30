@@ -36,6 +36,18 @@ ROLE_ADMIN = "admin"
 ROLE_USER = "user"
 
 UNLIMITED_CREDITS = -1
+
+# 授权码类型：无限次 / 有限次 / 单次
+CODE_UNLIMITED = "unlimited"
+CODE_LIMITED = "limited"
+CODE_SINGLE = "single"
+
+CODE_TYPE_LABELS = {
+    CODE_UNLIMITED: "无限次数",
+    CODE_LIMITED: "有限次数",
+    CODE_SINGLE: "单次授权",
+}
+
 CODE_LENGTH = 10
 # 去掉 0/O、1/I/L 等易混淆字符，方便人工抄写
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -59,6 +71,7 @@ AUTH_TABLE_SQL = (
     ");"
     "CREATE TABLE IF NOT EXISTS auth_codes ("
     " code TEXT PRIMARY KEY,"
+    " type TEXT NOT NULL DEFAULT 'single',"
     " name TEXT DEFAULT '',"
     " note TEXT DEFAULT '',"
     " uses INTEGER NOT NULL DEFAULT 1,"
@@ -171,6 +184,21 @@ class AuthManager:
             self.store.execute("ALTER TABLE auth_codes ADD COLUMN used INTEGER NOT NULL DEFAULT 0")
             if "used_count" in columns:
                 self.store.execute("UPDATE auth_codes SET used = used_count")
+        # 类型列：老库本来就有 type；中间版本建的表没有，需要补上并按 uses 推断
+        if "type" not in columns:
+            self.store.execute(
+                "ALTER TABLE auth_codes ADD COLUMN type TEXT NOT NULL DEFAULT 'single'"
+            )
+        self.store.execute(
+            "UPDATE auth_codes SET type = CASE"
+            " WHEN uses < 0 THEN 'unlimited'"
+            " WHEN uses <= 1 THEN 'single'"
+            " ELSE 'limited' END"
+            " WHERE type IS NULL OR type NOT IN ('unlimited', 'limited', 'single')"
+        )
+        # 让 type 与 uses 保持一致
+        self.store.execute("UPDATE auth_codes SET uses = -1 WHERE type = 'unlimited' AND uses >= 0")
+        self.store.execute("UPDATE auth_codes SET uses = 1 WHERE type = 'single' AND uses <> 1")
         if "user" not in self._columns("api_keys"):
             pass  # api_keys 结构未变
         if "code" not in self._columns("credit_usages"):
@@ -466,15 +494,36 @@ class AuthManager:
         *,
         count: int = 1,
         uses: int = 1,
+        code_type: str = "",
         name: str = "",
         note: str = "",
         expires_at: str = "",
     ) -> list[str]:
-        """批量生成授权码。uses = 这张授权码能跑几次（-1 表示不限）。"""
+        """批量生成授权码。
+
+        类型：single=单次（固定 1 次） / limited=有限次（次数由 uses 指定）
+        / unlimited=无限次（不限制次数）。
+        """
         count = max(1, min(500, int(count)))
-        uses = int(uses)
-        if uses == 0 or uses < -1:
-            raise AuthError("次数必须是正整数，或填 -1 表示不限次数")
+        code_type = (code_type or "").strip().lower()
+        if not code_type:
+            # 未指定类型时按次数推断，兼容只传 uses 的调用方式
+            if int(uses) < 0:
+                code_type = CODE_UNLIMITED
+            elif int(uses) <= 1:
+                code_type = CODE_SINGLE
+            else:
+                code_type = CODE_LIMITED
+        if code_type not in CODE_TYPE_LABELS:
+            raise AuthError("授权码类型只能是 unlimited / limited / single")
+        if code_type == CODE_SINGLE:
+            uses = 1
+        elif code_type == CODE_UNLIMITED:
+            uses = -1
+        else:
+            uses = int(uses)
+            if uses < 1:
+                raise AuthError("有限次授权码的次数必须是大于 0 的整数")
         created: list[str] = []
         with self._lock:
             for _ in range(count):
@@ -482,10 +531,10 @@ class AuthManager:
                 while self._code_row(code):
                     code = generate_code()
                 self.store.execute(
-                    "INSERT INTO auth_codes (code, name, note, uses, used, enabled,"
+                    "INSERT INTO auth_codes (code, type, name, note, uses, used, enabled,"
                     " created_at, updated_at, expires_at)"
-                    " VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?)",
-                    (code, name, note, uses, now_str(), now_str(), expires_at),
+                    " VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?)",
+                    (code, code_type, name, note, uses, now_str(), now_str(), expires_at),
                 )
                 created.append(code)
         return created
@@ -513,10 +562,17 @@ class AuthManager:
     def _code_public(cls, row: dict[str, Any]) -> dict[str, Any]:
         uses = int(row.get("uses", 1) or 0)
         used = int(row.get("used", 0) or 0)
-        unlimited = uses < 0
+        code_type = str(row.get("type") or "").strip().lower()
+        if code_type not in CODE_TYPE_LABELS:
+            code_type = (
+                CODE_UNLIMITED if uses < 0 else CODE_SINGLE if uses <= 1 else CODE_LIMITED
+            )
+        unlimited = code_type == CODE_UNLIMITED or uses < 0
         remaining = None if unlimited else max(0, uses - used)
         return {
             "code": row.get("code"),
+            "type": code_type,
+            "type_label": CODE_TYPE_LABELS.get(code_type, code_type),
             "name": row.get("name", ""),
             "note": row.get("note", ""),
             "uses": uses,

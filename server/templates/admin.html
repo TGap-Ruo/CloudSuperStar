@@ -134,16 +134,21 @@
       <div class="panel">
         <h3>生成授权码</h3>
         <div class="row">
+          <div><label>类型</label><select id="nc-type" onchange="onCodeTypeChange()">
+            <option value="single">单次授权</option>
+            <option value="limited" selected>有限次数</option>
+            <option value="unlimited">无限次数</option>
+          </select></div>
           <div><label>数量</label><input id="nc-count" type="number" value="1" style="width:90px"></div>
-          <div><label>每张次数（-1 不限）</label><input id="nc-uses" type="number" value="10" style="width:130px"></div>
+          <div><label>每张次数</label><input id="nc-uses" type="number" value="10" style="width:130px"></div>
           <div><label>名称/归属</label><input id="nc-name" placeholder="XX学校-张三" style="width:170px"></div>
           <div><label>备注</label><input id="nc-note" placeholder="选填" style="width:170px"></div>
           <div><label>到期时间</label><input id="nc-expires" placeholder="2026-12-31 或留空" style="width:160px"></div>
           <button class="btn" onclick="createCodes()">生成</button>
         </div>
-        </div>
         <div class="hint" style="margin-top:8px">
-          一张授权码 = 几次刷课。跑一次刷课程序扣 1 次（一次里刷几门课都算 1 次）；运行失败会自动退还。
+          <b>单次授权</b>＝只能用 1 次；<b>有限次数</b>＝次数由「每张次数」决定；<b>无限次数</b>＝不限制。
+          一张授权码跑一次刷课扣 1 次（一次里刷几门课都算 1 次），运行失败会自动退还。
         </div>
       </div>
       <div class="panel">
@@ -461,8 +466,17 @@ async function deleteUser(username) {
 }
 
 /* ───────────── 授权码 ───────────── */
+function onCodeTypeChange() {
+  const type = document.getElementById('nc-type').value;
+  const uses = document.getElementById('nc-uses');
+  uses.disabled = type !== 'limited';
+  if (type === 'single') uses.value = 1;
+  if (type === 'unlimited') uses.value = 0;
+}
+
 async function createCodes() {
   const payload = {
+    type: document.getElementById('nc-type').value,
     count: parseInt(document.getElementById('nc-count').value || '1', 10),
     uses: parseInt(document.getElementById('nc-uses').value || '1', 10),
     name: document.getElementById('nc-name').value.trim(),
@@ -495,12 +509,14 @@ async function loadCodes(silent) {
     const codes = data.codes || [];
     const box = document.getElementById('codesTable');
     if (!codes.length) { box.innerHTML = '<div class="empty">暂无授权码</div>'; return; }
-    box.innerHTML = '<table><thead><tr><th>授权码</th><th>名称</th><th>已用/总次数</th><th>剩余</th>' +
+    box.innerHTML = '<table><thead><tr><th>授权码</th><th>类型</th><th>名称</th><th>已用/总次数</th><th>剩余</th>' +
       '<th>AI 花费</th><th>到期</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
       codes.map(function (c) {
         const usage = c.usage || {};
         return '<tr>' +
           '<td class="mono"><b>' + esc(c.code) + '</b></td>' +
+          '<td><span class="pill ' + (c.type === 'unlimited' ? 'ok' : c.type === 'single' ? 'warn' : 'muted') + '">' +
+            esc(c.type_label) + '</span></td>' +
           '<td>' + esc(c.name || '-') + '<div class="hint">' + esc(c.note || '') + '</div></td>' +
           '<td>' + num(c.used) + ' / ' + (c.unlimited ? '∞' : num(c.uses)) + '</td>' +
           '<td>' + esc(c.remaining_label) + '</td>' +

@@ -4,6 +4,9 @@
 import pytest
 
 from server.auth import (
+    CODE_LIMITED,
+    CODE_SINGLE,
+    CODE_UNLIMITED,
     AuthError,
     AuthManager,
     UNLIMITED_CREDITS,
@@ -210,6 +213,59 @@ def test_code_usage_log(auth):
     assert len(usages) == 1
     assert usages[0]["task_id"] == "t1"
     assert usages[0]["kind"] == "code"
+
+
+def test_three_code_types(auth):
+    """三种授权码：单次 / 有限次数 / 无限次数。"""
+    single = auth.create_codes(count=1, code_type=CODE_SINGLE)[0]
+    limited = auth.create_codes(count=1, code_type=CODE_LIMITED, uses=3)[0]
+    unlimited = auth.create_codes(count=1, code_type=CODE_UNLIMITED)[0]
+
+    info = auth.get_code(single)
+    assert info["type"] == "single"
+    assert info["type_label"] == "单次授权"
+    assert info["uses"] == 1 and info["remaining"] == 1
+
+    info = auth.get_code(limited)
+    assert info["type"] == "limited"
+    assert info["type_label"] == "有限次数"
+    assert info["uses"] == 3 and info["remaining"] == 3
+
+    info = auth.get_code(unlimited)
+    assert info["type"] == "unlimited"
+    assert info["type_label"] == "无限次数"
+    assert info["unlimited"] is True and info["remaining"] is None
+    assert info["remaining_label"] == "不限次数"
+
+
+def test_single_code_only_once(auth):
+    code = auth.create_codes(count=1, code_type=CODE_SINGLE, uses=99)[0]
+    assert auth.get_code(code)["uses"] == 1          # 单次强制 1 次
+    auth.consume(task_id="t1", code=code)
+    ok, message, _ = auth.verify_code(code)
+    assert not ok and "用尽" in message
+
+
+def test_limited_code_requires_positive_uses(auth):
+    with pytest.raises(AuthError, match="大于 0"):
+        auth.create_codes(count=1, code_type=CODE_LIMITED, uses=0)
+    with pytest.raises(AuthError, match="大于 0"):
+        auth.create_codes(count=1, code_type=CODE_LIMITED, uses=-1)
+
+
+def test_unlimited_code_ignores_uses(auth):
+    code = auth.create_codes(count=1, code_type=CODE_UNLIMITED, uses=7)[0]
+    assert auth.get_code(code)["uses"] == -1
+    for index in range(15):
+        auth.consume(task_id=f"t{index}", code=code)
+    assert auth.verify_code(code)[0] is True
+
+
+def test_code_type_inferred_from_uses(auth):
+    """不显式传类型时按次数推断（兼容旧调用）。"""
+    assert auth.get_code(auth.create_codes(count=1, uses=1)[0])["type"] == "single"
+    assert auth.get_code(auth.create_codes(count=1, uses=5)[0])["type"] == "limited"
+    assert auth.get_code(auth.create_codes(count=1, uses=-1)[0])["type"] == "unlimited"
 
 
 def test_api_keys(auth):

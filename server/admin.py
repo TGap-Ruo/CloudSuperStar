@@ -15,7 +15,14 @@ from typing import Any, Callable
 import yaml
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file
 
-from server.auth import AuthError, AuthManager
+from server.auth import (
+    CODE_LIMITED,
+    CODE_SINGLE,
+    CODE_UNLIMITED,
+    CODE_TYPE_LABELS,
+    AuthError,
+    AuthManager,
+)
 from server.config import ServerConfig
 from server.usage import DEFAULT_PRICING, UsageRecorder, format_cost
 from server.tasks import TaskError, TaskManager
@@ -271,10 +278,15 @@ def create_admin_blueprint(
         if denied:
             return denied
         payload = request.get_json(silent=True) or {}
+        # 不传 type 时交给 auth 按 uses 推断（1=单次、>1=有限次、-1=无限次）
+        code_type = str(payload.get("type", "") or "").strip().lower()
+        if code_type and code_type not in CODE_TYPE_LABELS:
+            return _json_error("授权码类型不合法（可选 single / limited / unlimited）")
         try:
             codes = auth.create_codes(
                 count=int(payload.get("count", 1) or 1),
                 uses=int(payload.get("uses", 1) or 1),
+                code_type=code_type,
                 name=str(payload.get("name", "")),
                 note=str(payload.get("note", "")),
                 expires_at=str(payload.get("expires_at", "")),
@@ -282,7 +294,8 @@ def create_admin_blueprint(
         except AuthError as exc:
             return _json_error(str(exc))
         auth.log("create_codes", actor=(current_user() or {}).get("username", ""),
-                 detail=f"生成 {len(codes)} 张授权码", ip=client_ip())
+                 detail=f"生成 {len(codes)} 张 {CODE_TYPE_LABELS.get(code_type, code_type)}",
+                 ip=client_ip())
         return _json_ok(codes=codes)
 
     @bp.post("/api/codes/<code>/toggle")
