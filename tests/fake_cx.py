@@ -175,6 +175,45 @@ QUIZ_HTML = """
 </body></html>
 """
 
+# 「已批阅」页面：没有可作答的表单，只有对错标记与本次成绩。
+# 真实场景里正确答案经常被老师隐藏，因此判分只能依赖 marking_dui/marking_cuo 与成绩。
+GRADED_WORK_HTML = """
+<html><body>
+<form id="questionErrorForm1" action="/questionError/addQuestion" method="post"></form>
+<div class="aiArea"><div class="aiAreaContent">
+  <div class="TiMu newTiMu ans-cc singleQuesId" data="405577802" id="question405577802">
+    <div class="Zy_TItle clearfix"><div class="clearfix qtContent">
+      <span class="newZy_TItle">【多选题】</span>枚举策略的通用步骤包括?</div></div>
+    <div class="newAnswerBx"><div class="myAnswerBx marBot16">
+      <div class="myAnswer"><span class="answerFont fl">我的答案：</span>
+        <div class="fl answerCon">ABC</div><p class="clear"></p></div>
+      <div class="answerScore">
+        <div class="CorrectOrNot fl"><span class="marking_dui"></span></div>
+        <div class="fr newAnswerScore"><span class="scoreNum">50.0</span>分</div>
+      </div>
+    </div></div>
+  </div>
+  <div class="TiMu newTiMu ans-cc singleQuesId" data="405577803" id="question405577803">
+    <div class="Zy_TItle clearfix"><div class="clearfix qtContent">
+      <span class="newZy_TItle">【判断题】</span>枚举策略适用于任何规模的解空间。( )</div></div>
+    <div class="newAnswerBx"><div class="myAnswerBx marBot16">
+      <div class="myAnswer"><span class="answerFont fl">我的答案：</span>
+        <div class="fl answerCon">错</div><p class="clear"></p></div>
+      <div class="answerScore">
+        <div class="CorrectOrNot fl"><span class="marking_dui"></span></div>
+        <div class="fr newAnswerScore"><span class="scoreNum">50.0</span>分</div>
+      </div>
+    </div></div>
+  </div>
+</div></div>
+<span>本次成绩<i>100</i>分</span>
+</body></html>
+"""
+
+# 作答记录接口返回空页（真实环境里 record-list 经常拿不到数据），
+# 用于验证代码会退回到「解析题目页」的判断分支。
+RECORD_LIST_EMPTY_HTML = "<html><body><div>暂无记录</div></body></html>"
+
 
 @dataclass
 class FakeChaoxing:
@@ -184,6 +223,7 @@ class FakeChaoxing:
     work_submit_ok: bool = True
     work_submit_fail_times: int = 0  # 前 N 次提交故意失败，用于测试重试
     video_already_passed: bool = True
+    work_graded: bool = False        # 题目页已是「已批阅」状态（不可再作答）
     recorded: dict[str, Any] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
     extra_routes: dict[str, Callable[[requests.PreparedRequest], requests.Response]] = field(
@@ -247,7 +287,13 @@ class FakeChaoxing:
             return make_response(request, json_data={"msg": "阅读任务完成"})
 
         if path == "/mooc-ans/api/work":
-            return make_response(request, text=QUIZ_HTML)
+            return make_response(request, text=GRADED_WORK_HTML if self.work_graded else QUIZ_HTML)
+
+        if path == "/mooc-ans/work/record-list":
+            return make_response(request, text=RECORD_LIST_EMPTY_HTML)
+
+        if path == "/mooc-ans/work/record-detail":
+            return make_response(request, text=GRADED_WORK_HTML)
 
         if path == "/mooc-ans/work/addStudentWorkNew":
             self.recorded["work_submit"] = parse_qs(

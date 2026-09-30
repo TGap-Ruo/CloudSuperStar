@@ -129,6 +129,14 @@ class StudyResult(Enum):
         return self != StudyResult.SUCCESS
 
 
+class WorkNotAnswerable(Exception):
+    """题目页不是可作答的表单。
+
+    常见于：该章节检测已经提交过（页面变成"已批阅/查看答案"）、
+    老师未开放重做、或答案已封存。此时不应判为任务失败。
+    """
+
+
 class SignType(IntEnum):
     NORMAL = 0
     GESTURE = 3
@@ -327,12 +335,18 @@ def _parse_work_record_detail(html_text: str) -> list[dict]:
         title = re.sub(r'\s+', ' ', title).strip()
 
         # 我的答案
-        mam = re.search(r'我的答案：</span>\s*<div class="fl answerCon">\s*(.*?)\s*</div>', qb, re.S)
-        my_answer = re.sub(r'<[^>]+>', '', mam.group(1)).strip() if mam else ''
+        my_answer = _extract_answer_after(qb, "我的答案")
 
-        # 正确答案
-        cam = re.search(r'正确答案：</span>\s*<div class="fl answerCon">\s*(.*?)\s*</div>', qb, re.S)
-        correct_answer = re.sub(r'<[^>]+>', '', cam.group(1)).strip() if cam else ''
+        # 正确答案（老师可能设置为不显示，此时为空字符串）
+        correct_answer = _extract_answer_after(qb, "正确答案")
+
+        # 每题的对错标记：<div class="CorrectOrNot fl"><span class="marking_dui|marking_cuo"></span>
+        # 这是"已批阅"页面上最可靠的对错来源——正确答案经常被隐藏。
+        is_correct: Optional[bool] = None
+        if re.search(r'class="[^"]*marking_cuo[^"]*"', qb):
+            is_correct = False
+        elif re.search(r'class="[^"]*marking_dui[^"]*"', qb):
+            is_correct = True
 
         questions.append({
             "id": qid,
@@ -340,8 +354,145 @@ def _parse_work_record_detail(html_text: str) -> list[dict]:
             "type_label": type_label,
             "my_answer": my_answer,
             "correct_answer": correct_answer,
+            "is_correct": is_correct,
         })
     return questions
+
+
+def _extract_answer_after(html_text: str, label: str) -> str:
+    """从"我的答案：/正确答案："标签后提取答案文本，兼容几种页面结构。"""
+    patterns = (
+        r'%s[：:]?\s*</span>\s*<div[^>]*class="[^"]*answerCon[^"]*"[^>]*>(.*?)</div>',
+        r'%s[：:]?.{0,120}?class="[^"]*answerCon[^"]*"[^>]*>(.*?)</div>',
+    )
+    for pattern in patterns:
+        match = re.search(pattern % re.escape(label), html_text, re.S)
+        if match:
+            text = re.sub(r'<[^>]+>', '', match.group(1))
+            text = text.replace('\xa0', ' ')
+            return re.sub(r'\s+', ' ', text).strip()
+    return ''
+
+
+def _parse_work_total_score(html_text: str) -> Optional[float]:
+    """解析本次作答总分，例如 <span>本次成绩<i>100</i>分</span>。"""
+    for pattern in (r'本次成绩<i>\s*([\d.]+)\s*</i>', r'本次成绩[^0-9]{0,20}([\d.]+)\s*分'):
+        match = re.search(pattern, html_text)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+_TRUE_ANSWERS = {"对", "正确", "是", "√", "true", "t", "yes", "y"}
+_FALSE_ANSWERS = {"错", "错误", "否", "×", "x", "false", "f", "no", "n"}
+
+
+def normalize_answer(text: str) -> str:
+    """答案归一化：去掉空白与标点，用于容错比较。"""
+    if not text:
+        return ""
+    text = str(text).replace('，', ',').replace('、', ',').replace('；', ';')
+    text = re.sub(r'[\s,;:：.。．、\'"“”‘’()（）\[\]【】]+', '', text)
+    return text.strip().lower()
+
+
+def answers_equal(my_answer: str, correct_answer: str) -> Optional[bool]:
+    """比较两个答案是否等价。
+
+    返回 None 表示"信息不足，无法判断"——例如正确答案被老师隐藏，
+    此时绝不能据此判定为答错（这正是 2/2 题误判的根因）。
+    """
+    mine = normalize_answer(my_answer)
+    truth = normalize_answer(correct_answer)
+    if not mine or not truth:
+        return None
+    if mine == truth:
+        return True
+    if mine in _TRUE_ANSWERS and truth in _TRUE_ANSWERS:
+        return True
+    if mine in _FALSE_ANSWERS and truth in _FALSE_ANSWERS:
+        return True
+    # 多选：提取选项字母集合比较（"AC" 与 "A、C" 等价）
+    mine_letters = re.findall(r'[a-z]', mine)
+    truth_letters = re.findall(r'[a-z]', truth)
+    if mine_letters and truth_letters and set(mine_letters) == set(truth_letters):
+        return True
+    return False
+
+
+def judge_work_detail(
+    detail: list[dict], score: Optional[float], times: int = 0
+) -> Optional[dict]:
+    """判断章节检测是否需要重做。
+
+    判定优先级：逐题对错标记 > 本次成绩 > 可见的正确答案文本比较。
+    任何信息都不足以判断时返回 None（调用方按"通过"处理，避免把已完成的
+    章节检测反复重做甚至判为失败）。
+    """
+    if not detail:
+        return None
+
+    def build_feedback(questions: list[dict]) -> list[str]:
+        items = []
+        for q in questions:
+            items.append(
+                f"- 题目：{q.get('title', '')}\n"
+                f"  题型：{q.get('type_label', '')}\n"
+                f"  你的上次答案：{(q.get('my_answer') or '').strip() or '(空)'}\n"
+                f"  正确答案：{(q.get('correct_answer') or '').strip() or '(未公开)'}"
+            )
+        return items
+
+    explicit_wrong = [q for q in detail if q.get("is_correct") is False]
+    explicit_right = [q for q in detail if q.get("is_correct") is True]
+
+    if explicit_wrong:
+        return {
+            "all_correct": False,
+            "feedback": build_feedback(explicit_wrong),
+            "score": score if score is not None else 0.0,
+            "times": times,
+        }
+
+    if score is not None and score >= 100:
+        return {"all_correct": True, "feedback": [], "score": score, "times": times}
+
+    if len(explicit_right) == len(detail) and explicit_right:
+        return {
+            "all_correct": True,
+            "feedback": [],
+            "score": score if score is not None else 100.0,
+            "times": times,
+        }
+
+    # 到这里说明分数不满或未知：用可见的正确答案做最后兜底比较
+    compared = [answers_equal(q.get("my_answer"), q.get("correct_answer")) for q in detail]
+    wrong = [q for q, ok in zip(detail, compared) if ok is False]
+    if wrong:
+        return {
+            "all_correct": False,
+            "feedback": build_feedback(wrong),
+            "score": score if score is not None else 0.0,
+            "times": times,
+        }
+
+    if compared and all(ok is True for ok in compared):
+        return {
+            "all_correct": True,
+            "feedback": [],
+            "score": score if score is not None else 100.0,
+            "times": times,
+        }
+
+    if score is not None and score < 100:
+        # 分数不满但拿不到正确答案（被隐藏）→ 重做一次，反馈里只给题目
+        return {"all_correct": False, "feedback": [], "score": score, "times": times}
+
+    logger.debug("章节检测结果信息不足（无对错标记、无成绩、正确答案未公开），跳过重做判断")
+    return None
 
 
 class Chaoxing:
@@ -1003,6 +1154,10 @@ class Chaoxing:
             if _resp.status_code == 200 and questions.get("questions"):
                 return _resp, questions
 
+            if _resp.status_code == 200 and not questions.get("questions"):
+                # 200 但没有可作答的题目：通常是已提交过的"已批阅"页面
+                raise WorkNotAnswerable("题目页已无可作答内容（可能已提交或老师未开放重做）")
+
             logger.warning(
                 f"无效响应 (Code: {getattr(_resp, 'status_code', 'Unknown')}), 重试中...")
             raise RuntimeError(f"请求返回无效数据 (Code: {_resp.status_code})")
@@ -1029,8 +1184,50 @@ class Chaoxing:
             except PermissionError as e:
                 logger.warning(f"跳过章节检测: {e}")
                 return StudyResult.SUCCESS
+            except WorkNotAnswerable as e:
+                # 页面已不是可作答表单：先核对成绩，确认它其实已经批阅过。
+                # 这是「章节检测已提交 + 不开放重做」的正常情况，不能判为失败，
+                # 否则会反复重试并把已经完成的章节标记成失败。
+                logger.warning(f"章节检测无法作答: {e}，正在核对是否已提交")
+                try:
+                    info = self._check_work_result(
+                        _session, _course, _job, _job_info, questions or {}
+                    )
+                except Exception as check_error:  # noqa: BLE001
+                    logger.debug(f"核对章节检测成绩失败: {check_error}")
+                    info = None
+                if info is not None:
+                    if info.get("all_correct"):
+                        logger.info(
+                            f"章节检测已提交且成绩合格（{info.get('score', '?')} 分），通过"
+                        )
+                    else:
+                        logger.warning(
+                            f"章节检测已提交但不开放重做（成绩 {info.get('score', '?')} 分），"
+                            "保留现有成绩，跳过（如需要请在手机/网页端手动重做）"
+                        )
+                    return StudyResult.SUCCESS
+                logger.error("章节检测页面不可作答，且无法确认是否已提交，按失败处理")
+                return StudyResult.ERROR
             except Exception as e:
                 logger.error(f"获取章节检测题目失败, 达到最大重试次数: {e}")
+                # 重做时拿不到题目，通常意味着上一轮**其实已经提交成功**（题目页变成"已批阅"，
+                # 不再有可作答表单）。此时再核对一次成绩，确认合格就按通过处理，
+                # 避免把已经做完的章节检测判成失败并反复重试。
+                if attempt > 0:
+                    try:
+                        retry_info = self._check_work_result(
+                            _session, _course, _job, _job_info, questions or {}
+                        )
+                    except Exception as check_error:  # noqa: BLE001
+                        logger.debug(f"复核章节检测成绩失败: {check_error}")
+                        retry_info = None
+                    if retry_info and retry_info.get("all_correct"):
+                        logger.info(
+                            "重做时已无法再取到题目（页面已变为已批阅），"
+                            f"但成绩为 {retry_info.get('score', '?')} 分，按通过处理"
+                        )
+                        return StudyResult.SUCCESS
                 return StudyResult.ERROR
 
             _ORIGIN_HTML_CONTENT = final_resp.text  # 用于配合输出网页源码, 帮助修复#391错误
@@ -1302,30 +1499,20 @@ class Chaoxing:
                         "times": 0,
                     }
                 elif '正确答案' in html and '我的答案' in html:
-                    # 已提交详情页：解析成绩与对错
+                    # 已提交（已批阅）页面：用对错标记 + 本次成绩判断，
+                    # 不能用"我的答案 != 正确答案"（超星经常隐藏正确答案）
                     detail = _parse_work_record_detail(html)
                     if detail:
-                        feedback = []
-                        all_correct = True
-                        for q in detail:
-                            my_ans = (q.get("my_answer") or "").strip()
-                            correct_ans = (q.get("correct_answer") or "").strip()
-                            if my_ans != correct_ans:
-                                all_correct = False
-                                feedback.append(
-                                    f"- 题目：{q.get('title', '')}\n"
-                                    f"  题型：{q.get('type_label', '')}\n"
-                                    f"  你的上次答案：{my_ans or '(空)'}\n"
-                                    f"  正确答案：{correct_ans or '(空)'}"
-                                )
-                        m = re.search(r'本次成绩<i>([\d.]+)</i>分', html)
-                        score = float(m.group(1)) if m else 0.0
-                        return {
-                            "all_correct": all_correct,
-                            "feedback": feedback,
-                            "score": score,
-                            "times": 0,
-                        }
+                        return judge_work_detail(
+                            detail, _parse_work_total_score(html), times=0
+                        )
+                elif '我的答案' in html and ('marking_dui' in html or 'marking_cuo' in html):
+                    # 页面里没有"正确答案"字样，但有我的答案 + 对错标记
+                    detail = _parse_work_record_detail(html)
+                    if detail:
+                        return judge_work_detail(
+                            detail, _parse_work_total_score(html), times=0
+                        )
                 return None
             except Exception as e:
                 logger.warning(f"兜底判断章节检测状态失败: {e}")
@@ -1365,28 +1552,16 @@ class Chaoxing:
             logger.warning("章节检测作答详情解析为空，跳过成绩检查")
             return None
 
-        # 3. 逐题判断对错，收集错误反馈
-        feedback = []
-        all_correct = True
-        for q in detail:
-            my_ans = (q.get("my_answer") or "").strip()
-            correct_ans = (q.get("correct_answer") or "").strip()
-            if my_ans != correct_ans:
-                all_correct = False
-                feedback.append(
-                    f"- 题目：{q.get('title', '')}\n"
-                    f"  题型：{q.get('type_label', '')}\n"
-                    f"  你的上次答案：{my_ans or '(空)'}\n"
-                    f"  正确答案：{correct_ans or '(空)'}"
-                )
-
-        logger.debug(f"章节检测成绩: {latest_score} 分, 全部正确: {all_correct}, 错题数: {len(feedback)}")
-        return {
-            "all_correct": all_correct,
-            "feedback": feedback,
-            "score": latest_score,
-            "times": latest_times,
-        }
+        # 3. 依据对错标记 / 成绩 /（可见的）正确答案综合判断
+        result = judge_work_detail(detail, latest_score, times=latest_times)
+        if result is not None:
+            logger.debug(
+                "章节检测成绩: {} 分, 全部正确: {}, 错题数: {}",
+                result.get("score"),
+                result.get("all_correct"),
+                len(result.get("feedback") or []),
+            )
+        return result
 
     def study_read(self, _course, _job, _job_info) -> StudyResult:
         """

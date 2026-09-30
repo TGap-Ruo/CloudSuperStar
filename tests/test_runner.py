@@ -64,6 +64,18 @@ def test_work_submit_failure_marks_chapter_failed(server_config, monkeypatch, fa
     assert report.chapters_failed >= 1
 
 
+def test_graded_work_chapter_is_not_marked_failed(server_config, monkeypatch):
+    """章节检测已提交（页面变为已批阅、成绩 100）时不应被判失败，也不应再提交。"""
+    fake = fake_cx.install(monkeypatch, fake_cx.FakeChaoxing(work_graded=True))
+    report = run_account(server_config, server_config.accounts[0])
+
+    assert report.status == "success", report.message
+    assert report.chapters_failed == 0
+    assert report.chapters_finished == 3
+    # 已批阅的检测卷不应触发任何提交
+    assert fake.recorded.get("work_submit") is None
+
+
 def test_transient_failure_is_retried_and_recovers(server_config, monkeypatch, fake_openai):
     """第一次提交失败、重试成功：验证重试中的章节不会被队列提前丢弃。"""
     fake = fake_cx.install(

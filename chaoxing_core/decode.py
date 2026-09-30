@@ -392,6 +392,13 @@ def decode_questions_info(html_content: str) -> Dict[str, Any]:
     soup = BeautifulSoup(html_content, "lxml")
     form_data = _extract_form_data(soup)
 
+    form_tag = soup.find("form")
+    if not form_tag:
+        # 已批阅/查看答案页面可能没有作答表单，此时没有可作答的题目，
+        # 直接返回空题目列表，交给上层按"已提交"处理，避免抛异常。
+        form_data["questions"] = []
+        return form_data
+    
     # 检查是否存在字体加密
     has_font_encryption = bool(soup.find("style", id="cxSecretStyle"))
     font_decoder = None
@@ -403,7 +410,7 @@ def decode_questions_info(html_content: str) -> Dict[str, Any]:
 
     # 处理所有问题
     questions = []
-    for div_tag in soup.find("form").find_all("div", class_="singleQuesId"):
+    for div_tag in form_tag.find_all("div", class_="singleQuesId"):
         question = _process_question(div_tag, font_decoder)
         if question:
             questions.append(question)
