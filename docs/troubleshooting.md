@@ -246,6 +246,27 @@ sudo systemctl restart chaoxing-web chaoxing-serve
 * 说明题库没搜到该题，程序按题型随机选了一个（日志中会标注 `随机选择`）。
 * 想彻底避免随机作答：把 `submit` 设为 `false`，或临时把该章节留给自己手动完成。
 
+**题目里出现怪字（如「下巚巓巘巕巗问巙詶是?」「坙坘壢坥坢坖」）**
+
+这是超星的**字体加密题没解出来**——加密题需要靠 `font_map_table.json` 把怪字还原成正常汉字，
+映射表没加载时解密会退化成"保留原文"，题目和选项就都是怪字，AI 自然也答不对。
+
+该问题（2026-09-30 修复）根因是打包时把映射表放进了 `chaoxing_core/resources/`，
+而代码按上游的 `resource/`（单数、项目根）去找，服务端又把工作目录切到了账号目录 → 表根本没加载。
+现在 `resource_path()` 会按 PyInstaller 解包目录 → 包目录 → 项目根目录 → 当前工作目录 依次查找，
+并兼容 `resource/` 与 `resources/` 两种目录名。
+
+自检方法：
+
+```bash
+cd /opt/chaoxing && .venv/bin/python -c "
+from chaoxing_core.cxsecret_font import fonthash_dao
+print('字体表条目数:', len(fonthash_dao.hash_map))"
+# 应输出三万多条；若为 0 且日志里有"初始化字体哈希数据失败"，说明资源没被正确打包
+```
+
+修复后日志里不应再出现 `初始化字体哈希数据失败`，题目文本应为可读中文。
+
 **题目是图片 / 带特殊字体**
 
 * 超星的字体加密题（`cxSecretStyle`）已内置解码，日志里出现

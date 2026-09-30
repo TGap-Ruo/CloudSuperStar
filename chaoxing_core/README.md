@@ -9,7 +9,7 @@
 | 文件 | 改动 | 原因 |
 | --- | --- | --- |
 | `logger.py` | 日志文件路径/级别改由 `CX_LOG_FILE` / `CX_LOG_LEVEL` 环境变量控制，并新增 `reconfigure()`；目录不可写时自动退化为仅控制台输出 | 服务端需要把日志写到账号目录，且不能在只读环境中崩溃 |
-| `cxsecret_font.py` | `resource_path()` 优先用项目目录定位 `resource/font_map_table.json`，其次才回退当前工作目录 | 服务端会把工作目录切到账号目录，字体映射表仍需能找到 |
+| `cxsecret_font.py` | `resource_path()` 改为按「PyInstaller 解包目录 → 包目录 → 项目根目录 → 当前工作目录」查找，并同时兼容 `resource/` 与 `resources/` 两种目录名 | 字体映射表实际位于 `chaoxing_core/resources/`，而上游按 `resource/`（项目根）查找；定位失败会导致字体加密题解不出来、题目显示为怪字 |
 | `__init__.py` | 补充说明性文档字符串 | 明确来源与改动范围 |
 | `base.py` | 章节检测判分改用「对错标记 → 本次成绩 → 可见答案比较」三级判定，并新增 `WorkNotAnswerable`（页面已批阅/不可作答时不再判失败）；答案比较做归一化 | 修复「成绩 100 分却被判 N/N 题答错」导致的无意义重做与章节误判失败 |
 | `decode.py` | `decode_questions_info()` 在页面没有 `<form>`（已批阅页面）时返回空题目列表而不抛异常 | 配合上面的判分修复 |

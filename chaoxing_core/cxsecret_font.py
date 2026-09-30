@@ -30,30 +30,47 @@ KX_RADICALS_TAB = str.maketrans(
 
 def resource_path(relative_path: str) -> str:
     """
-    获取资源文件的路径，兼容 PyInstaller 打包后的环境。
+    获取资源文件的路径，兼容 PyInstaller 打包后的环境与不同的目录布局。
 
-    服务端版本额外做了两件事：优先使用项目目录（``chaoxing_core`` 的上级）作为根，
-    这样即使进程工作目录被切换到账号数据目录，字体映射表依然可以正确定位；
-    项目目录下找不到时再回退到当前工作目录。
+    历史上这里只按「当前工作目录」解析，服务端会把工作目录切到账号数据目录，
+    导致 ``resource/font_map_table.json`` 找不到、字体加密题解不出来（表现为
+    题目里出现 巚巓巘 这类怪字）。现在按下面的顺序查找，命中即返回：
+
+    1. PyInstaller 解包目录 ``sys._MEIPASS``
+    2. 包目录（``chaoxing_core/``）
+    3. 项目根目录（``chaoxing_core`` 的上一级）
+    4. 当前工作目录
+
+    同时兼容 ``resource/`` 与 ``resources/`` 两种目录名。
 
     Args:
         relative_path: 相对路径
 
     Returns:
-        资源文件的绝对路径
+        资源文件的绝对路径（找不到时返回第一个候选路径，便于报错时定位）
     """
-    try:
-        # PyInstaller创建临时文件夹，定位路径
-        base_path = sys._MEIPASS
-    except Exception:
-        # 非打包环境：优先项目根目录，其次当前工作目录
-        package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if os.path.exists(os.path.join(package_root, relative_path)):
-            base_path = package_root
-        else:
-            base_path = os.path.abspath(".")
+    head, tail = os.path.split(relative_path)
+    variants = [relative_path]
+    if head == "resource":
+        variants.append(os.path.join("resources", tail))
+    elif head == "resources":
+        variants.append(os.path.join("resource", tail))
 
-    return os.path.join(base_path, relative_path)
+    bases = []
+    try:
+        bases.append(sys._MEIPASS)  # PyInstaller 解包目录
+    except Exception:
+        pass
+    package_dir = os.path.dirname(os.path.abspath(__file__))
+    bases.append(package_dir)
+    bases.append(os.path.dirname(package_dir))
+    bases.append(os.path.abspath("."))
+
+    candidates = [os.path.join(base, variant) for base in bases for variant in variants]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
 
 
 class FontHashDAO:
