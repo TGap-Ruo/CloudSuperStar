@@ -177,6 +177,30 @@ def test_no_token_mode_allows_access(config_path, server_config):
     assert app.test_client().get("/api/tasks").status_code == 200
 
 
+# ─────────────────────────── 前端弹窗层级 ───────────────────────────
+
+def test_consume_dialog_layers_above_course_dialog():
+    """用户反馈过：消耗确认弹窗被"选择课程"弹窗盖住，导致点不到。
+
+    两个弹窗都是 position:fixed 的全屏遮罩，DOM 里 courseModal 在后面，
+    因此必须显式给 consumeModal 更高的 z-index。
+    """
+    import re
+    from pathlib import Path
+
+    html = (
+        Path(__file__).resolve().parent.parent / "server" / "templates" / "index.html"
+    ).read_text(encoding="utf-8")
+    base = re.search(r"\.modal\s*\{[^}]*?z-index:\s*(\d+)", html, re.S)
+    consume = re.search(r"#consumeModal\s*\{[^}]*?z-index:\s*(\d+)", html, re.S)
+    assert base, "未找到 .modal 的 z-index"
+    assert consume, "未找到 #consumeModal 的 z-index"
+    assert int(consume.group(1)) > int(base.group(1))
+
+    # DOM 顺序也确认一下：courseModal 在 consumeModal 之后（所以更需要 z-index）
+    assert html.index('id="courseModal"') > html.index('id="consumeModal"')
+
+
 # ─────────────────────────── 课程选择流程 ───────────────────────────
 
 FAKE_COURSES = [

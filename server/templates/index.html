@@ -113,12 +113,14 @@
   th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 600; font-size: 12px; }
   .full { grid-column: 1 / -1; }
-  .toast { position: fixed; right: 22px; top: 22px; z-index: 99; padding: 11px 16px;
+  .toast { position: fixed; right: 22px; top: 22px; z-index: 400; padding: 11px 16px;
            border-radius: 9px; background: #111827; color: #fff; font-size: 13px;
            box-shadow: 0 8px 24px rgba(0,0,0,.3); max-width: 380px; }
   .toast.error { background: #b91c1c; } .toast.ok { background: #15803d; }
   .modal { position: fixed; inset: 0; background: rgba(15,18,24,.55);
            display: flex; align-items: center; justify-content: center; z-index: 100; }
+  /* 消耗确认弹窗可能从"选择课程"弹窗里弹出，必须盖在它上面，否则点不到 */
+  #consumeModal { z-index: 300; }
   .modal .card { width: 380px; }
   .modal .card.wide { width: 660px; max-width: 94vw; max-height: 86vh;
                       display: flex; flex-direction: column; }
