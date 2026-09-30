@@ -41,7 +41,7 @@ CODE_LENGTH = 10
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 PBKDF2_ROUNDS = 200_000
 
-AUTH_SCHEMA = (
+AUTH_TABLE_SQL = (
     "CREATE TABLE IF NOT EXISTS users ("
     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " username TEXT UNIQUE NOT NULL,"
@@ -80,8 +80,6 @@ AUTH_SCHEMA = (
     " refunded INTEGER NOT NULL DEFAULT 0,"
     " detail TEXT DEFAULT ''"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_credit_user ON credit_usages (user, at DESC);"
-    "CREATE INDEX IF NOT EXISTS idx_credit_task ON credit_usages (task_id);"
     "CREATE TABLE IF NOT EXISTS api_keys ("
     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " key TEXT UNIQUE NOT NULL,"
@@ -100,8 +98,17 @@ AUTH_SCHEMA = (
     " detail TEXT DEFAULT '',"
     " ip TEXT DEFAULT ''"
     ");"
+)
+
+# 索引单独建：老库的表可能缺少新列，必须等 _migrate() 补完列再建索引
+AUTH_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_credit_user ON credit_usages (user, at DESC);"
+    "CREATE INDEX IF NOT EXISTS idx_credit_task ON credit_usages (task_id);"
+    "CREATE INDEX IF NOT EXISTS idx_credit_code ON credit_usages (code);"
     "CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_logs (at DESC);"
 )
+
+AUTH_SCHEMA = AUTH_TABLE_SQL
 
 
 def now_str() -> str:
@@ -138,8 +145,9 @@ class AuthError(Exception):
 class AuthManager:
     def __init__(self, db_path: str | Path):
         self.store = Store(db_path)
-        self.store.executescript(AUTH_SCHEMA)
-        self._migrate()
+        self.store.executescript(AUTH_TABLE_SQL)
+        self._migrate()                     # 先补列
+        self.store.executescript(AUTH_INDEX_SQL)  # 后建索引
         self._lock = threading.RLock()
 
     def _columns(self, table: str) -> set[str]:

@@ -54,7 +54,10 @@ MODEL_ALIASES = {
     "deepseek-v3.2": "deepseek-flash",
 }
 
-USAGE_SCHEMA = (
+# 建表与建索引分开：老库的表结构是旧版本，"CREATE TABLE IF NOT EXISTS" 不会补列，
+# 如果直接把索引也放在这里，旧库会因为索引引用了还不存在的列而启动失败
+# （真实踩坑：no such column: code）。正确顺序是 建表 → 补列迁移 → 建索引。
+USAGE_TABLE_SQL = (
     "CREATE TABLE IF NOT EXISTS ai_usage ("
     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " at TEXT NOT NULL,"
@@ -74,12 +77,18 @@ USAGE_SCHEMA = (
     " currency TEXT DEFAULT 'USD',"
     " detail TEXT DEFAULT ''"
     ");"
+)
+
+USAGE_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_usage_account ON ai_usage (account, at DESC);"
     "CREATE INDEX IF NOT EXISTS idx_usage_user ON ai_usage (user, at DESC);"
     "CREATE INDEX IF NOT EXISTS idx_usage_task ON ai_usage (task_id);"
     "CREATE INDEX IF NOT EXISTS idx_usage_code ON ai_usage (code);"
     "CREATE INDEX IF NOT EXISTS idx_usage_at ON ai_usage (at DESC);"
 )
+
+# 兼容旧名字（外部若引用了 USAGE_SCHEMA）
+USAGE_SCHEMA = USAGE_TABLE_SQL
 
 
 def utc_now_dt() -> datetime:
@@ -201,8 +210,9 @@ class UsageRecorder:
 
     def __init__(self, db_path: str | Path):
         self.store = Store(db_path)
-        self.store.executescript(USAGE_SCHEMA)
-        self._migrate()
+        self.store.executescript(USAGE_TABLE_SQL)
+        self._migrate()                      # 先补列
+        self.store.executescript(USAGE_INDEX_SQL)   # 后建索引（此时列一定存在）
 
     def _migrate(self) -> None:
         """老库补列：授权码字段是后加的。"""
