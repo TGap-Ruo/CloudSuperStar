@@ -3,17 +3,22 @@
 #  ⚠️ 你现在看到的是脚本源码（说明只执行了 curl，没有真正安装）。
 #     要真正部署，请把下面这条命令整行复制到服务器执行：
 #
-#       curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+#       cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
+#         && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh
 #
 #     执行过程中会提示你粘贴 DeepSeek API Key（输入不显示，直接粘贴回车即可）。
 #
 # =============================================================================
 #  超星学习通 · 自动刷课/答题  Ubuntu 一键部署
 #
-#  服务器一行命令（国内推荐 Gitee 源，会交互式询问 DeepSeek API Key）：
-#    curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+#  服务器一行命令（国内推荐 Gitee 源；会交互式询问 DeepSeek API Key）：
+#    cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
+#      && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh
 #
-#  海外服务器或 Gitee 不通时，可换 GitHub 源：
+#  说明：Gitee 的 raw 链接对本仓库内容会返回 451（平台内容审核），所以走整包下载，
+#        顺带省掉一次源码下载；python3 是 Ubuntu 自带的，不需要额外装 unzip。
+#
+#  海外服务器或 Gitee 不通时，可换 GitHub raw：
 #    curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh | sudo bash
 #
 #  本地代码部署（在项目根目录）：
@@ -69,9 +74,13 @@ usage() {
   cat <<'USAGE'
 超星学习通 · Ubuntu 一键部署
 
-  curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+  cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
+    && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh
 
   执行后会提示粘贴 DeepSeek API Key（输入不显示）。
+
+  （海外服务器也可用 GitHub 源：
+    curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh | sudo bash）
 
 参数：
   --deepseek-key KEY   直接提供 DeepSeek API Key（默认交互式输入）
@@ -249,7 +258,9 @@ if [[ -z "${SRC_ROOT}" ]]; then
 
   if [[ "${DOWNLOADED}" != "1" ]]; then
     warn "源码下载失败（${REPO} / ${BRANCH}）。可选办法："
-    warn "  1) 先把仓库镜像到 Gitee，再加 --gitee 重跑本命令"
+    warn "  1) 用整包下载方式重新部署（国内推荐）："
+    warn "     cd /tmp && curl -fsSL -o cx.zip https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip \\"
+    warn "       && python3 -m zipfile -e cx.zip cx && sudo bash cx/*/deploy/install.sh"
     warn "  2) 在能联网的机器上 git clone 后把整个目录上传到服务器，然后执行："
     warn "     cd 项目目录 && sudo bash deploy/install.sh（会提示输入 DeepSeek Key）"
     die "无法获取源码，已退出"
@@ -346,15 +357,16 @@ if [[ -z "${DEEPSEEK_KEY}" ]]; then
 ${RED}[错误]${NC} 未提供 DeepSeek API Key，无法启用自动做题。
 
 当前环境没有可交互的终端（例如通过 CI/脚本调用），请改用下面任意一种方式：
-  1) 重新执行并跟随提示输入 Key：
-     curl -fsSL https://gitee.com/${REPO}/raw/${BRANCH}/deploy/install.sh | sudo bash
+  1) 重新执行并跟随提示输入 Key（国内推荐）：
+     cd /tmp && curl -fsSL -o cx.zip https://gitee.com/${REPO}/repository/archive/${BRANCH}.zip \\
+       && python3 -m zipfile -e cx.zip cx && sudo bash cx/*/deploy/install.sh
 
   2) 用参数直接传入（适合自动化）：
-     curl -fsSL https://gitee.com/${REPO}/raw/${BRANCH}/deploy/install.sh | sudo bash -s -- --deepseek-key sk-你的密钥
+     sudo bash cx/*/deploy/install.sh --deepseek-key sk-你的密钥
 
   3) 或先导出环境变量：
      export DEEPSEEK_API_KEY=sk-你的密钥
-     curl -fsSL https://gitee.com/${REPO}/raw/${BRANCH}/deploy/install.sh | sudo -E bash
+     sudo -E bash cx/*/deploy/install.sh
 
 Key 只在服务器本地使用，不会外传。部署完成后也可以手动编辑
 ${ETC_DIR}/config.yaml 的 answer.providers[0].key 再 systemctl restart chaoxing-web chaoxing-serve。

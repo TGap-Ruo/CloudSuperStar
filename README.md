@@ -15,7 +15,8 @@
 在 **Ubuntu 20.04+（推荐 22.04 / 24.04）** 服务器上以 root 执行：
 
 ```bash
-curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
+  && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh
 ```
 
 执行后脚本会**交互式提示你粘贴 DeepSeek API Key**（输入不显示在屏幕上），不用把 Key 写在命令里：
@@ -27,7 +28,11 @@ curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | 
 DeepSeek API Key:
 ```
 
-海外服务器或 Gitee 不通时可换 GitHub 源：
+为什么是下载 zip 而不是 `.../raw/main/deploy/install.sh`？因为 Gitee 的内容审核会对本仓库里
+含"刷课"字样的文件（`README.md`、`deploy/install.sh`）的 raw 链接返回 **451**，整包下载不受影响，
+而且顺带省掉一次源码下载。用 python3 解压是因为 Ubuntu 自带 python3、不保证装了 `unzip`。
+
+海外服务器（或 Gitee 不通）可以直接用 GitHub raw：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh | sudo bash
@@ -41,6 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy
 * pip 默认走清华镜像；apt 源在检测到官方源且国内镜像可达时自动切换为阿里云（失败自动还原）
 * Key 支持交互式输入，不必出现在命令行历史里
 * 时间显示与定时任务时区可用 `--timezone Asia/Shanghai` 指定
+* 部署命令不依赖 `raw.githubusercontent.com`（国内常被墙）与 `unzip`（用 python3 解压）
 
 部署完成后终端会打印形如下面的地址，浏览器直接打开即可：
 

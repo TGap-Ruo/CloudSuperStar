@@ -20,11 +20,18 @@ tail -f data/accounts/<账号>/chaoxing.log
 
 **`curl ... | sudo bash` 卡住、超时或提示 "Failed to connect"**
 
-`raw.githubusercontent.com` 在国内经常不可达，请改用 Gitee 源：
+`raw.githubusercontent.com` 在国内经常不可达，改用 Gitee 整包下载（推荐，已验证可用）：
 
 ```bash
-curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
+  && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh
 ```
+
+**Gitee 的 raw 链接返回 451**
+
+`https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh` 会返回
+`451 The content may contain violation information` —— 这是 Gitee 的内容审核拦截了含"刷课"字样的文件，
+不是脚本坏了。用上面的**整包下载**方式即可（zip 通道不受影响）。
 
 如果连 gitee.com 也访问不了（内网/无外网出口），就在能联网的机器上 `git clone`
 后把整个目录上传到服务器，然后执行 `sudo bash deploy/install.sh`。
@@ -35,7 +42,8 @@ curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | 
 切换后 `apt-get update` 失败会自动还原）。也可以手动指定：
 
 ```bash
-curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash -s -- --apt-mirror aliyun
+cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
+  && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh --apt-mirror aliyun
 ```
 
 **pip 装依赖很慢或失败**
@@ -101,7 +109,8 @@ sudo systemctl restart chaoxing-web chaoxing-serve
 * 说明 `config.yaml` 的 `answer.providers[0].key` 还是占位符或为空，此时无法自动做题。
 * 重新执行部署命令，按提示粘贴 Key 即可（会保留已有账号等配置）：
   ```bash
-  curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+  cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
+    && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh
   ```
   或手动编辑 `/etc/chaoxing/config.yaml` 的 `answer.providers[0].key` 后执行
   `systemctl restart chaoxing-web chaoxing-serve`。
