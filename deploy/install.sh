@@ -60,6 +60,8 @@ REPO="${REPO:-tgap/cloud-super-star}"
 BRANCH="${BRANCH:-main}"
 GIT_HOST="${GIT_HOST:-gitee}"
 APT_MIRROR="${APT_MIRROR:-auto}"
+PIP_CANDIDATES=()
+PIP_INDEX_CHOSEN=""
 SKIP_KEY_TEST="0"
 OPEN_FIREWALL="1"
 UNINSTALL="0"
@@ -102,6 +104,125 @@ usage() {
 USAGE
 }
 
+# ─────────────────────────── pip 源探测（解决 Errno 101 / 国外源不可达）──
+# 很多国内 VPS 只有 IPv4 路由，但镜像域名带 AAAA 记录，客户端优先走 IPv6 时
+# 会立刻返回 "Errno 101 Network is unreachable"。这里逐源探测并优先使用 IPv4。
+PREFER_IPV4_DONE="0"
+
+prefer_ipv4() {
+  [[ "${PREFER_IPV4_DONE}" == "1" ]] && return 0
+  PREFER_IPV4_DONE="1"
+  [[ -f /etc/gai.conf ]] || return 0
+  grep -qs "precedence ::ffff:0:0/96" /etc/gai.conf && return 0
+  cp -a /etc/gai.conf "/etc/gai.conf.bak-$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  printf '\n# chaoxing 部署脚本追加：IPv6 不可达时优先使用 IPv4\nprecedence ::ffff:0:0/96  100\n' >> /etc/gai.conf
+  info "检测到 IPv6 不通而 IPv4 正常，已让系统优先使用 IPv4（/etc/gai.conf）"
+}
+
+http_code_of() {
+  # $1=url $2=可选 curl 附加参数；返回 HTTP 码，000 表示不可达
+  local code
+  # shellcheck disable=SC2086
+  code="$(curl -sS -m 8 -o /dev/null -w '%{http_code}' ${2:-} "$1" 2>/dev/null || true)"
+  echo "${code:-000}"
+}
+
+url_ok() {
+  # 只认 2xx/3xx：403/451/5xx 这类「能连上但用不了」必须排除
+  local code
+  code="$(http_code_of "$1" "${2:-}")"
+  case "${code}" in
+    2??|3??) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+build_pip_candidates() {
+  local raw=()
+  # 优先尊重用户/系统已有配置（/etc/pip.conf 里的 index-url 通常已经被验证可用）
+  local configured=""
+  configured="$(grep -hs -m1 -E '^\s*index-url\s*=' /etc/pip.conf ~/.pip/pip.conf ~/.config/pip/pip.conf 2>/dev/null \
+    | sed -E 's/^\s*index-url\s*=\s*//' | tr -d ' ' || true)"
+  [[ -n "${configured}" ]] && raw+=("${configured}")
+  raw+=("${PIP_INDEX}" "https://pypi.tuna.tsinghua.edu.cn/simple" "https://mirrors.aliyun.com/pypi/simple/" \
+        "https://mirrors.cloud.tencent.com/pypi/simple/" "https://pypi.org/simple/")
+
+  local seen=" " idx
+  PIP_CANDIDATES=()
+  for idx in "${raw[@]}"; do
+    [[ -z "${idx}" ]] && continue
+    case "${seen}" in *" ${idx} "*) continue ;; esac
+    seen="${seen}${idx} "
+    PIP_CANDIDATES+=("${idx}")
+  done
+}
+
+select_pip_index() {
+  local idx probe code
+  for idx in "${PIP_CANDIDATES[@]}"; do
+    probe="${idx%/}/setuptools/"
+    if url_ok "${probe}"; then
+      PIP_INDEX_CHOSEN="${idx}"
+      return 0
+    fi
+    if url_ok "${probe}" "-4"; then
+      # 仅 IPv4 可达 → 典型的 IPv6 无路由，改 gai.conf 后 pip 也能通
+      prefer_ipv4
+      PIP_INDEX_CHOSEN="${idx}"
+      return 0
+    fi
+    code="$(http_code_of "${probe}")"
+    warn "pip 源不可用: ${idx}（HTTP ${code}）"
+  done
+  return 1
+}
+
+diagnose_pip_failure() {
+  warn "所有 pip 源都不可达，下面是一些诊断信息："
+  warn "  默认路由："
+  ip -4 route show default 2>/dev/null | sed 's/^/    /' >&2 || true
+  ip -6 route show default 2>/dev/null | sed 's/^/    /' >&2 || true
+  warn "  DNS 解析 pypi.tuna.tsinghua.edu.cn："
+  getent ahosts pypi.tuna.tsinghua.edu.cn 2>/dev/null | head -4 | sed 's/^/    /' >&2 || true
+  warn "  连通性："
+  warn "    IPv4 curl: $(http_code_of https://pypi.tuna.tsinghua.edu.cn/simple/setuptools/ -4)"
+  warn "    IPv6 curl: $(http_code_of https://pypi.tuna.tsinghua.edu.cn/simple/setuptools/ -6)"
+  local idx
+  for idx in "${PIP_CANDIDATES[@]}"; do
+    warn "    ${idx} -> HTTP $(http_code_of "${idx%/}/setuptools/")"
+  done
+  warn "  可尝试："
+  warn "    1) 指定可达的源：  ... | sudo bash -s -- --pip-index https://你的源/simple/"
+  warn "    2) 若 IPv6 不通：  echo 'precedence ::ffff:0:0/96 100' >> /etc/gai.conf"
+  warn "    3) 无外网出口时，用能联网的机器下载 wheels 后离线安装"
+}
+
+install_python_deps() {
+  local python_bin="${APP_DIR}/.venv/bin/python"
+  local args=(-q --disable-pip-version-check --timeout 20 --retries 2)
+  local chosen="${PIP_INDEX_CHOSEN}"
+  local idx ok="0"
+
+  info "使用 pip 源: ${chosen}"
+  "${python_bin}" -m pip install "${args[@]}" --upgrade pip -i "${chosen}" \
+    || warn "pip 自身升级失败，继续使用 venv 自带版本"
+
+  for idx in "${chosen}" "${PIP_CANDIDATES[@]}"; do
+    [[ -z "${idx}" ]] && continue
+    if "${python_bin}" -m pip install "${args[@]}" -i "${idx}" -e "${APP_DIR}"; then
+      ok="1"
+      [[ "${idx}" != "${chosen}" ]] && PIP_INDEX_CHOSEN="${idx}"
+      break
+    fi
+    warn "用 ${idx} 安装依赖失败，尝试下一个源…"
+  done
+
+  if [[ "${ok}" != "1" ]]; then
+    diagnose_pip_failure
+    die "Python 依赖安装失败"
+  fi
+}
+
 # 国内服务器把 apt 源换成国内镜像；失败会自动还原，绝不把机器搞成装不了包的状态。
 setup_apt_mirror() {
   local want="${1:-auto}"
@@ -121,13 +242,21 @@ setup_apt_mirror() {
     auto)
       grep -rqs -e "archive.ubuntu.com" -e "security.ubuntu.com" \
         /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || return 0
-      if [[ -n "${codename}" ]] && curl -fsS -m 6 -o /dev/null \
-          "${aliyun}/dists/${codename}/Release" 2>/dev/null; then
-        base="${aliyun}"
-      elif [[ -n "${codename}" ]] && curl -fsS -m 6 -o /dev/null \
-          "${tuna}/dists/${codename}/Release" 2>/dev/null; then
-        base="${tuna}"
-      else
+      local cand probe release
+      for cand in "${aliyun}" "${tuna}"; do
+        [[ -z "${codename}" ]] && break
+        release="${cand}/dists/${codename}/Release"
+        if url_ok "${release}"; then
+          base="${cand}"
+          break
+        fi
+        if url_ok "${release}" "-4"; then
+          prefer_ipv4
+          base="${cand}"
+          break
+        fi
+      done
+      if [[ -z "${base}" ]]; then
         info "未检测到可用的国内镜像，保持原有 apt 源"
         return 0
       fi
@@ -289,9 +418,12 @@ rsync -a --delete \
 if [[ ! -x "${APP_DIR}/.venv/bin/python" ]]; then
   python3 -m venv "${APP_DIR}/.venv"
 fi
-"${APP_DIR}/.venv/bin/python" -m pip install -q --upgrade pip
-"${APP_DIR}/.venv/bin/python" -m pip install -q -i "${PIP_INDEX}" -e "${APP_DIR}" \
-  || die "Python 依赖安装失败（可尝试 PIP_INDEX=https://pypi.org/simple 重新执行）"
+build_pip_candidates
+if ! select_pip_index; then
+  diagnose_pip_failure
+  die "找不到可用的 Python 软件源，已停止"
+fi
+install_python_deps
 info "依赖安装完成"
 
 # -------------------------------------------------------------- 4. DeepSeek Key
