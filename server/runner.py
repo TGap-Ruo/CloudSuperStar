@@ -677,6 +677,7 @@ def run_account(
                 run_id=report.run_id,
             ),
             pricing=config.pricing or None,
+            currency=config.server.currency,
         )
     except Exception as exc:  # noqa: BLE001 - 统计失败不影响刷课
         from chaoxing_core.logger import logger as _logger

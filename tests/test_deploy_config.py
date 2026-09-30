@@ -158,4 +158,5 @@ def test_new_deployment_uses_current_default_model(tmp_path):
     assert table["answer"]["providers"][0]["model"] == "deepseek-flash"
     assert table["server"]["auth_enabled"] is True
     assert table["server"]["admin_path"] == "/admin"
-    assert table["pricing"]["deepseek-flash"]["cache_miss"] == 0.3
+    assert table["pricing"]["deepseek-flash"]["cache_miss"] == 2.0
+    assert table["server"]["currency"] == "CNY"

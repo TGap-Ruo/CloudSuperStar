@@ -330,6 +330,7 @@ class ServerSettings:
     credits_per_task: int = 1
     refund_on_failure: bool = True
     usd_to_cny: float = 7.2
+    currency: str = "CNY"
 
 
 @dataclass
@@ -529,6 +530,7 @@ def load_config(path: str | os.PathLike, *, strict: bool = True) -> ServerConfig
         credits_per_task=max(1, _as_int(server_raw.get("credits_per_task"), 1)),
         refund_on_failure=_as_bool(server_raw.get("refund_on_failure", True)),
         usd_to_cny=_as_float(server_raw.get("usd_to_cny"), 7.2),
+        currency=str(server_raw.get("currency", "CNY") or "CNY").strip().upper(),
     )
     if server.data_dir:
         data_dir_path = Path(server.data_dir).expanduser()

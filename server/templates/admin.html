@@ -218,10 +218,11 @@
         <div class="hint" style="margin-top:8px" id="set-key-hint"></div>
       </div>
       <div class="panel">
-        <h3>计费单价（美元 / 1M tokens，高峰价；非高峰自动打 5 折）</h3>
+        <h3>计费单价（人民币元 / 1M tokens，高峰价；非高峰自动打 5 折）</h3>
         <div id="pricingEditor"></div>
         <div class="hint" style="margin-top:8px">
-          按 DeepSeek 官方定价填写：缓存命中 / 缓存未命中 / 输出 三档。改完保存即写入 config.yaml。
+          按 DeepSeek 官方定价（元 / 1M tokens）填写：缓存命中 / 缓存未命中 / 输出 三档；非高峰自动打 5 折。
+          改完保存即写入 config.yaml，重启服务后生效。
         </div>
       </div>
       <div class="panel">
@@ -241,7 +242,7 @@
           <div><label>每次任务扣减次数</label><input id="set-credits" type="number" min="1" style="width:130px"></div>
           <div><label>失败自动退还</label><select id="set-refund"><option value="true">是</option><option value="false">否</option></select></div>
           <div><label>同时运行任务上限</label><input id="set-parallel" type="number" min="1" style="width:140px"></div>
-          <div><label>美元→人民币汇率（仅展示）</label><input id="set-rate" type="number" step="0.01" style="width:150px"></div>
+          <div><label>计价货币（CNY/USD）</label><input id="set-currency" placeholder="CNY" style="width:120px"></div>
         </div>
         <div class="row" style="margin-top:14px">
           <button class="btn" onclick="saveSettings()">保存设置</button>
@@ -254,7 +255,7 @@
 
 <script>
 const BASE = "{{ base }}";
-const USD_TO_CNY = {{ usd_to_cny or 7.2 }};
+const CURRENCY = '{{ currency }}';
 let USERS = [];
 let PRICING = {};
 
@@ -269,10 +270,12 @@ function toast(message, type) {
   document.body.appendChild(el);
   setTimeout(function () { el.remove(); }, 3600);
 }
-function money(usd) {
-  const value = Number(usd || 0);
-  const cny = value * USD_TO_CNY;
-  return '$' + value.toFixed(6) + '（约 ¥' + cny.toFixed(4) + '）';
+function money(amount) {
+  // 计价货币默认人民币（与 DeepSeek 中文站定价、国内账户余额一致）
+  const value = Number(amount || 0);
+  if (!value) return '¥0';
+  if (value < 0.01) return '¥' + value.toFixed(5);
+  return '¥' + value.toFixed(4);
 }
 function num(value) {
   return Number(value || 0).toLocaleString('zh-CN');
@@ -333,7 +336,7 @@ async function loadDashboard() {
       card('调用次数', num(today.calls), ''),
       card('输入 tokens', num(today.prompt_tokens), '其中缓存命中 ' + num(today.cache_hit_tokens)),
       card('输出 tokens', num(today.output_tokens), ''),
-      card('今日费用', money(today.cost), '按当前定价估算'),
+      card('今日费用', money(today.cost), '按当前定价估算（元）'),
     ].join('');
     const list = (data.recent_tasks || []);
     document.getElementById('dashTasks').innerHTML = list.length ? taskTable(list, false) : '<div class="empty">暂无任务</div>';
@@ -696,7 +699,7 @@ async function loadSettings() {
     document.getElementById('set-credits').value = security.credits_per_task;
     document.getElementById('set-refund').value = security.refund_on_failure ? 'true' : 'false';
     document.getElementById('set-parallel').value = security.web_max_parallel_tasks;
-    document.getElementById('set-rate').value = security.usd_to_cny;
+    document.getElementById('set-currency').value = security.currency || CURRENCY;
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -738,7 +741,7 @@ async function saveSettings() {
       credits_per_task: parseInt(document.getElementById('set-credits').value || '1', 10),
       refund_on_failure: document.getElementById('set-refund').value === 'true',
       web_max_parallel_tasks: parseInt(document.getElementById('set-parallel').value || '8', 10),
-      usd_to_cny: parseFloat(document.getElementById('set-rate').value || '7.2')
+      currency: (document.getElementById('set-currency').value || 'CNY').trim().toUpperCase()
     }
   };
   try {

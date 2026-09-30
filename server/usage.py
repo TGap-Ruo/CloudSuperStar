@@ -31,13 +31,18 @@ logger = logging.getLogger("chaoxing.usage")
 
 UNIT = 1_000_000
 
+# 默认按**人民币**计价（DeepSeek 中文站定价，与国内账户余额同口径）。
+# 高峰价（元 / 1M tokens）：非高峰自动打 5 折。
 DEFAULT_PRICING: dict[str, dict[str, float]] = {
-    "deepseek-flash": {"cache_hit": 0.006, "cache_miss": 0.3, "output": 1.2},
-    "deepseek-v4-pro": {"cache_hit": 0.044, "cache_miss": 1.32, "output": 3.96},
-    "deepseek-chat": {"cache_hit": 0.006, "cache_miss": 0.3, "output": 1.2},
-    "deepseek-reasoner": {"cache_hit": 0.044, "cache_miss": 1.32, "output": 3.96},
-    "__default__": {"cache_hit": 0.006, "cache_miss": 0.3, "output": 1.2},
+    "deepseek-flash": {"cache_hit": 0.04, "cache_miss": 2.0, "output": 8.0},
+    "deepseek-v4-pro": {"cache_hit": 0.3, "cache_miss": 9.0, "output": 27.0},
+    # 旧模型名：折算到等价价位，避免历史记录算不出钱
+    "deepseek-chat": {"cache_hit": 0.04, "cache_miss": 2.0, "output": 8.0},
+    "deepseek-reasoner": {"cache_hit": 0.3, "cache_miss": 9.0, "output": 27.0},
+    "__default__": {"cache_hit": 0.04, "cache_miss": 2.0, "output": 8.0},
 }
+
+DEFAULT_CURRENCY = "CNY"
 
 OFF_PEAK_FACTOR = 0.5
 PEAK_HOUR_RANGES = ((1, 4), (6, 10))
@@ -215,6 +220,7 @@ class UsageRecorder:
         provider: str = "",
         pricing: dict[str, dict[str, float]] | None = None,
         at: Optional[datetime] = None,
+        currency: str = DEFAULT_CURRENCY,
     ) -> dict[str, Any]:
         context = context or UsageContext()
         at = at or utc_now_dt()
@@ -242,7 +248,7 @@ class UsageRecorder:
             "output_tokens": tokens["output"],
             "total_tokens": tokens["total"],
             "cost": cost,
-            "currency": "USD",
+            "currency": currency,
             "detail": json.dumps(
                 {"peak": is_peak(at), "raw_model": model}, ensure_ascii=False
             ),
@@ -372,6 +378,7 @@ def install_usage_hook(
     context: UsageContext,
     *,
     pricing: dict[str, dict[str, float]] | None = None,
+    currency: str = DEFAULT_CURRENCY,
 ) -> None:
     """在刷课子进程里挂上用量回调（每次调用大模型后回调一次）。"""
     key = str(db_path)
@@ -388,6 +395,7 @@ def install_usage_hook(
                 context=context,
                 provider=str(payload.get("provider", "")),
                 pricing=pricing,
+                currency=currency,
             )
         except Exception as exc:  # noqa: BLE001 - 统计失败不能影响答题
             logger.warning("记录 AI 用量失败: %s", exc)
@@ -402,10 +410,10 @@ def current_recorder(db_path: str | Path) -> Optional[UsageRecorder]:
     return _recorders.get(str(db_path))
 
 
-def format_cost(cost: float, currency: str = "USD") -> str:
+def format_cost(cost: float, currency: str = DEFAULT_CURRENCY) -> str:
     symbol = "¥" if currency == "CNY" else "$"
     if not cost:
         return f"{symbol}0"
     if cost < 0.01:
-        return f"{symbol}{cost:.6f}"
+        return f"{symbol}{cost:.5f}"
     return f"{symbol}{cost:.4f}"

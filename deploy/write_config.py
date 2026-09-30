@@ -75,6 +75,7 @@ def build_config(
     admin_user: str = "admin",
     admin_password: str = "",
     preserve_model: bool = False,
+    currency: str = "CNY",
 ) -> dict[str, Any]:
     config: dict[str, Any] = dict(template or {})
 
@@ -92,6 +93,7 @@ def build_config(
             "auth_enabled": auth_enabled,
             "admin_path": admin_path,
             "admin_user": admin_user,
+            "currency": currency,
         }
     )
     # 只在显式给了密码时写入；留空则保留原值（首次启动会随机生成并打印）
@@ -147,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--admin-user", default="admin")
     parser.add_argument("--admin-password", default="")
     parser.add_argument("--force-model", action="store_true", help="即使配置里已有模型也强制覆盖")
+    parser.add_argument("--currency", default="CNY", choices=["CNY", "USD"], help="计费货币，默认 CNY")
     parser.add_argument(
         "--default-submit",
         default="true",
@@ -199,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         admin_user=args.admin_user,
         admin_password=args.admin_password,
         preserve_model=is_existing and not args.force_model,
+        currency=args.currency,
     )
 
     config_path.parent.mkdir(parents=True, exist_ok=True)

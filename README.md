@@ -138,7 +138,7 @@ server:
 「刷一个账号花了多少钱」在后台「用量与费用」里看得到，粒度为：**每个任务 / 每个学习通账号 /
 每个用户 / 每天 / 每个模型**。
 
-计价口径（美元 / 1M tokens，默认值取自 DeepSeek 官方定价页）：
+计价口径（人民币元 / 1M tokens，默认值取自 DeepSeek 官方定价页中文站）：
 
 ```
 费用 = 缓存命中 tokens × 命中单价 + 缓存未命中 tokens × 未命中单价 + 输出 tokens × 输出单价
@@ -151,10 +151,12 @@ server:
 
 ```yaml
 pricing:
-  deepseek-flash:   { cache_hit: 0.006, cache_miss: 0.3,  output: 1.2 }
-  deepseek-v4-pro:  { cache_hit: 0.044, cache_miss: 1.32, output: 3.96 }
+  deepseek-flash:   { cache_hit: 0.04, cache_miss: 2.0,  output: 8.0 }
+  deepseek-v4-pro:  { cache_hit: 0.30, cache_miss: 9.0,  output: 27.0 }
 ```
 
+> **实测（2026-09-30，人工智能通识）**：7 个章节（7 视频 + 7 章节检测、21 次 AI 调用）
+> 共消耗 **9 078 tokens、¥0.0276**，平均每题 ¥0.0013 —— 一门课的 AI 成本约 **几毛钱**。
 > 实现方式：`chaoxing_core` 每次调用大模型后回调一次，把接口返回的 `usage` 交给
 > `server/usage.py` 记账（见 `chaoxing_core/README.md` 的改动清单）。与官方账单的对账方法
 > 和允许的差异见 [docs/admin.md](docs/admin.md#五token-用量与费用是怎么算的)。

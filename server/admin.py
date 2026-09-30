@@ -107,7 +107,7 @@ def create_admin_blueprint(
             base=base,
             admin_path=base,
             username=user.get("username", ""),
-            currency="USD",
+            currency=config.server.currency,
             usd_to_cny=config.server.usd_to_cny,
         )
 
@@ -449,7 +449,7 @@ def create_admin_blueprint(
                 "admin_path": base,
                 "credits_per_task": config.server.credits_per_task,
                 "refund_on_failure": config.server.refund_on_failure,
-                "usd_to_cny": config.server.usd_to_cny,
+                "currency": config.server.currency,
                 "web_max_parallel_tasks": config.server.web_max_parallel_tasks,
             },
         )
@@ -494,7 +494,7 @@ def create_admin_blueprint(
                 "auth_enabled",
                 "credits_per_task",
                 "refund_on_failure",
-                "usd_to_cny",
+                "currency",
                 "web_max_parallel_tasks",
             }
             server_update = {key: value for key, value in security.items() if key in allowed}

@@ -14,6 +14,7 @@ from chaoxing_core.base import (
     judge_work_detail,
 )
 from chaoxing_core.decode import decode_questions_info
+from chaoxing_core.answer_check import check_multiple, check_single
 
 
 def question_block(
@@ -153,3 +154,17 @@ def test_decode_questions_info_without_form_is_safe():
     """没有 <form> 的页面（已批阅）不应抛异常，应返回空题目列表。"""
     result = decode_questions_info("<html><body><div>已批阅</div></body></html>")
     assert result["questions"] == []
+
+
+def test_check_single_accepts_chinese_punctuation_in_text():
+    """实测踩坑：含顿号的单选答案被误判为"类型不符"，导致丢弃正确答案后随机作答。"""
+    # 正确答案是文本、里面带顿号 → 仍是单选题答案
+    assert check_single("靠近数据源的边缘计算设备(如基站、智能网关)") is True
+    assert check_single("通过简化表征来辅助信息处理和预测") is True
+    assert check_single("错误") is True
+    # 纯选项字母串 → 判定为多选，交给多选分支处理
+    assert check_single("A、B、C") is False
+    assert check_single("AB") is False
+    # 换行分隔的多段答案 → 也不是单选
+    assert check_single("第一行\n第二行") is False
+    assert check_multiple("A、B、C") is True

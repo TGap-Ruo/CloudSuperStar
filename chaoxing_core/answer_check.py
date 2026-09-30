@@ -1,3 +1,6 @@
+import re
+
+
 def check_single(answer):
     if answer is None:
         return False
@@ -6,13 +9,20 @@ def check_single(answer):
     if not text:
         return False
 
-    # 单选答案文本中常见逗号（中英文）是句内标点，不应据此判定为多选。
-    # 仅在出现明显“多段答案”分隔符时，才判定为非单选。
-    strong_delimiters = ["\n", "|", "#", "\t", "\r", "、"]
+    # 单选答案里的顿号/逗号常常只是中文句内标点（例如
+    # "靠近数据源的边缘计算设备(如基站、智能网关)"），不能据此判定成多选，
+    # 否则正确答案会被丢弃、退化成随机作答（实测踩过这个坑）。
+    # 只有真正的“多段答案”分隔符才算非单选。
+    strong_delimiters = ["\n", "|", "#", "\t", "\r"]
     for sep in strong_delimiters:
         parts = [p.strip() for p in text.split(sep) if p.strip()]
         if len(parts) > 1:
             return False
+
+    # 形如 "AB"、"A、B"、"A,B" 的纯选项字母串 → 显然不是单选题的答案文本
+    letters = re.sub(r'[\s,，、;；/|]+', '', text)
+    if len(letters) > 1 and re.fullmatch(r'[A-Za-z]+', letters):
+        return False
 
     return True
 

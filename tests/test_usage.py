@@ -55,9 +55,9 @@ def test_parse_usage_openai_and_deepseek():
 
 
 def test_compute_cost_peak_and_off_peak():
-    # deepseek-flash 高峰：未命中 0.3 / 输出 1.2（美元 / 1M）
+    # deepseek-flash 高峰：未命中 2 元 / 输出 8 元（人民币 / 1M tokens）
     cost = compute_cost("deepseek-flash", cache_miss_tokens=1000, output_tokens=500, at=PEAK)
-    assert cost == pytest.approx(0.0009, rel=1e-6)
+    assert cost == pytest.approx(0.006, rel=1e-6)
     # 非高峰打五折
     cost_off = compute_cost("deepseek-flash", cache_miss_tokens=1000, output_tokens=500, at=OFF_PEAK)
     assert cost_off == pytest.approx(cost / 2, rel=1e-6)
@@ -125,7 +125,7 @@ def test_recorder_since_filter(tmp_path):
 
 
 def test_format_cost():
-    assert format_cost(0) == "$0"
-    assert format_cost(0.0009).startswith("$0.0009")
-    assert format_cost(1.5) == "$1.5000"
-    assert format_cost(0.01, "CNY").startswith("¥")
+    assert format_cost(0) == "¥0"
+    assert format_cost(0.006).startswith("¥0.006")
+    assert format_cost(1.5) == "¥1.5000"
+    assert format_cost(0.01, "USD").startswith("$")
