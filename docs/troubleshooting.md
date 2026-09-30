@@ -16,6 +16,53 @@ tail -f data/accounts/<账号>/chaoxing.log
 
 ---
 
+## 部署命令在国内服务器上跑不动
+
+**`curl ... | sudo bash` 卡住、超时或提示 "Failed to connect"**
+
+`raw.githubusercontent.com` 在国内经常不可达，请改用 Gitee 源：
+
+```bash
+curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+```
+
+如果连 gitee.com 也访问不了（内网/无外网出口），就在能联网的机器上 `git clone`
+后把整个目录上传到服务器，然后执行 `sudo bash deploy/install.sh`。
+
+**卡在"安装系统依赖"很久**
+
+脚本会尝试把 apt 源切成国内镜像（`--apt-mirror auto`，仅当当前是官方源且国内镜像可达时才切，
+切换后 `apt-get update` 失败会自动还原）。也可以手动指定：
+
+```bash
+curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash -s -- --apt-mirror aliyun
+```
+
+**pip 装依赖很慢或失败**
+
+默认已使用清华镜像。可换阿里云源：
+
+```bash
+... | sudo bash -s -- --pip-index https://mirrors.aliyun.com/pypi/simple/
+```
+
+**提示"无法访问 https://api.deepseek.com，已跳过校验"**
+
+说明服务器连不上 DeepSeek API（或被安全策略拦截）。若确实无法直连，可在部署时加
+`--skip-key-test` 跳过校验，并在 `config.yaml` 的 `answer.providers[0]` 里把
+`base_url` 换成你能访问的中转地址；答题是否可用以控制台任务日志为准。
+
+**DeepSeek Key 输入错了想改**
+
+重新跑一次部署命令按提示输入新 Key（会保留其它配置），或者直接编辑配置文件：
+
+```bash
+sudo sed -i 's#^\( *key: \)sk-.*#\1sk-你的新Key#' /etc/chaoxing/config.yaml
+sudo systemctl restart chaoxing-web chaoxing-serve
+```
+
+---
+
 ## Web 控制台
 
 **打开页面提示"需要访问令牌" / 接口返回 401**
@@ -52,8 +99,12 @@ tail -f data/accounts/<账号>/chaoxing.log
 **顶部显示"未配置 DeepSeek Key"**
 
 * 说明 `config.yaml` 的 `answer.providers[0].key` 还是占位符或为空，此时无法自动做题。
-* 重新执行部署命令并带上 `--deepseek-key sk-xxx` 即可（会保留已有账号等配置），
-  或手动编辑 `/etc/chaoxing/config.yaml` 后 `systemctl restart chaoxing-web chaoxing-serve`。
+* 重新执行部署命令，按提示粘贴 Key 即可（会保留已有账号等配置）：
+  ```bash
+  curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+  ```
+  或手动编辑 `/etc/chaoxing/config.yaml` 的 `answer.providers[0].key` 后执行
+  `systemctl restart chaoxing-web chaoxing-serve`。
 
 **想让控制台只允许自己访问**
 

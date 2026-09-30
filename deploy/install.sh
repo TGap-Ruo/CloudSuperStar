@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  ⚠️ 你现在看到的是脚本源码（说明只执行了 curl，没有真正安装）。
-#     要真正部署，请把下面这条命令整行复制到服务器执行（注意结尾的 | bash）：
+#     要真正部署，请把下面这条命令整行复制到服务器执行：
 #
-#       curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh \
-#         | sudo bash -s -- --deepseek-key sk-你的DeepSeek密钥
+#       curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+#
+#     执行过程中会提示你粘贴 DeepSeek API Key（输入不显示，直接粘贴回车即可）。
 #
 # =============================================================================
 #  超星学习通 · 自动刷课/答题  Ubuntu 一键部署
 #
-#  服务器一行命令（推荐，必须带上 DeepSeek API Key）：
-#    curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh \
-#      | sudo bash -s -- --deepseek-key sk-xxxxxxxx
+#  服务器一行命令（国内推荐 Gitee 源，会交互式询问 DeepSeek API Key）：
+#    curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
 #
-#  不带 --deepseek-key 时会交互式提示输入（需要有终端）。
+#  海外服务器或 Gitee 不通时，可换 GitHub 源：
+#    curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh | sudo bash
 #
 #  本地代码部署（在项目根目录）：
-#    sudo bash deploy/install.sh --deepseek-key sk-xxxxxxxx
+#    sudo bash deploy/install.sh
 #
 #  常用参数：
-#    --deepseek-key KEY    DeepSeek API Key（必填，用于一键做题）
+#    --deepseek-key KEY    直接提供 DeepSeek API Key（默认交互式输入，适合自动化）
 #    --model NAME          DeepSeek 模型，默认 deepseek-chat
 #    --base-url URL        API 地址，默认 https://api.deepseek.com/v1
 #    --port N              Web 控制台端口，默认 8765
@@ -27,8 +28,10 @@
 #    --token TOKEN         访问令牌；默认自动随机生成
 #    --no-token            不启用访问令牌（任何人可访问，风险自负）
 #    --max-parallel N      同时运行的任务数上限，默认 8
-#    --repo OWNER/NAME     代码仓库，默认 TGap-Ruo/CloudSuperStar
-#    --gitee               从 Gitee 下载代码（国内服务器更快）
+#    --apt-mirror M        apt 源: auto(默认)/aliyun/tsinghua/none（国内服务器加速）
+#    --pip-index URL       pip 源，默认清华镜像
+#    --repo OWNER/NAME     代码仓库，默认 tgap/cloud-super-star
+#    --gitee / --github    代码来源，默认 gitee
 #    --branch NAME         分支，默认 main
 #    --skip-key-test       跳过 DeepSeek Key 联网校验
 #    --no-firewall         不修改 ufw 规则
@@ -48,9 +51,10 @@ MAX_PARALLEL="8"
 MODEL="deepseek-chat"
 BASE_URL="https://api.deepseek.com/v1"
 DEEPSEEK_KEY="${DEEPSEEK_KEY:-}"
-REPO="${REPO:-TGap-Ruo/CloudSuperStar}"
+REPO="${REPO:-tgap/cloud-super-star}"
 BRANCH="${BRANCH:-main}"
-GIT_HOST="${GIT_HOST:-github}"
+GIT_HOST="${GIT_HOST:-gitee}"
+APT_MIRROR="${APT_MIRROR:-auto}"
 SKIP_KEY_TEST="0"
 OPEN_FIREWALL="1"
 UNINSTALL="0"
@@ -65,11 +69,12 @@ usage() {
   cat <<'USAGE'
 超星学习通 · Ubuntu 一键部署
 
-  curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh \
-    | sudo bash -s -- --deepseek-key sk-xxxxxxxx
+  curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
+
+  执行后会提示粘贴 DeepSeek API Key（输入不显示）。
 
 参数：
-  --deepseek-key KEY   DeepSeek API Key（必填，用于一键做题）
+  --deepseek-key KEY   直接提供 DeepSeek API Key（默认交互式输入）
   --model NAME         模型，默认 deepseek-chat
   --base-url URL       API 地址，默认 https://api.deepseek.com/v1
   --port N             控制台端口，默认 8765
@@ -77,13 +82,82 @@ usage() {
   --token TOKEN        访问令牌，默认随机生成
   --no-token           关闭访问令牌（风险自负）
   --max-parallel N     同时运行任务数上限，默认 8
-  --repo OWNER/NAME    代码仓库，默认 TGap-Ruo/CloudSuperStar
-  --gitee              从 Gitee 下载（国内更快）
+  --apt-mirror M       apt 源: auto/aliyun/tsinghua/none（默认 auto）
+  --pip-index URL      pip 源，默认清华镜像
+  --repo OWNER/NAME    代码仓库，默认 tgap/cloud-super-star
+  --gitee / --github   代码来源，默认 gitee
   --branch NAME        分支，默认 main
   --skip-key-test      跳过 Key 联网校验
   --no-firewall        不修改 ufw
   --uninstall          卸载服务（保留数据）
 USAGE
+}
+
+# 国内服务器把 apt 源换成国内镜像；失败会自动还原，绝不把机器搞成装不了包的状态。
+setup_apt_mirror() {
+  local want="${1:-auto}"
+  [[ "${want}" == "none" ]] && return 0
+
+  local codename=""
+  # shellcheck disable=SC1091
+  codename="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")"
+  [[ -z "${codename}" ]] && codename="$(lsb_release -cs 2>/dev/null || true)"
+
+  local aliyun="https://mirrors.aliyun.com/ubuntu"
+  local tuna="https://mirrors.tuna.tsinghua.edu.cn/ubuntu"
+  local base=""
+  case "${want}" in
+    aliyun)   base="${aliyun}" ;;
+    tsinghua) base="${tuna}" ;;
+    auto)
+      grep -rqs -e "archive.ubuntu.com" -e "security.ubuntu.com" \
+        /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || return 0
+      if [[ -n "${codename}" ]] && curl -fsS -m 6 -o /dev/null \
+          "${aliyun}/dists/${codename}/Release" 2>/dev/null; then
+        base="${aliyun}"
+      elif [[ -n "${codename}" ]] && curl -fsS -m 6 -o /dev/null \
+          "${tuna}/dists/${codename}/Release" 2>/dev/null; then
+        base="${tuna}"
+      else
+        info "未检测到可用的国内镜像，保持原有 apt 源"
+        return 0
+      fi
+      ;;
+    *) warn "未知的 --apt-mirror 值: ${want}，保持原有 apt 源"; return 0 ;;
+  esac
+
+  local stamp files=()
+  stamp="$(date +%Y%m%d%H%M%S)"
+  local candidates=(/etc/apt/sources.list)
+  local f
+  for f in /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+    [[ -f "${f}" ]] && candidates+=("${f}")
+  done
+  for f in "${candidates[@]}"; do
+    [[ -f "${f}" ]] && grep -qs -e "ubuntu.com" "${f}" && files+=("${f}")
+  done
+  [[ ${#files[@]} -eq 0 ]] && return 0
+
+  for f in "${files[@]}"; do
+    cp -a "${f}" "${f}.bak-${stamp}"
+    sed -i \
+      -e "s|http://archive.ubuntu.com/ubuntu|${base}|g" \
+      -e "s|https://archive.ubuntu.com/ubuntu|${base}|g" \
+      -e "s|http://security.ubuntu.com/ubuntu|${base}|g" \
+      -e "s|https://security.ubuntu.com/ubuntu|${base}|g" \
+      -e "s|http://ports.ubuntu.com/ubuntu-ports|${base%ubuntu}ubuntu-ports|g" \
+      -e "s|https://ports.ubuntu.com/ubuntu-ports|${base%ubuntu}ubuntu-ports|g" \
+      "${f}"
+  done
+  info "apt 源已切换为 ${base}（原文件备份为 *.bak-${stamp}）"
+
+  if ! apt-get update -qq; then
+    warn "切换镜像后 apt-get update 失败，正在还原原始 apt 源…"
+    for f in "${files[@]}"; do
+      [[ -f "${f}.bak-${stamp}" ]] && mv -f "${f}.bak-${stamp}" "${f}"
+    done
+    apt-get update -qq || warn "还原后 apt-get update 仍失败，请检查服务器网络或安全组"
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -105,12 +179,14 @@ while [[ $# -gt 0 ]]; do
     --skip-key-test)  SKIP_KEY_TEST="1"; shift ;;
     --no-firewall)    OPEN_FIREWALL="0"; shift ;;
     --uninstall)      UNINSTALL="1"; shift ;;
+    --apt-mirror)     APT_MIRROR="${2:-auto}"; shift 2 ;;
+    --pip-index)      PIP_INDEX="${2:-}"; shift 2 ;;
     -h|--help)        usage; exit 0 ;;
     *) die "未知参数: $1（用 --help 查看用法）" ;;
   esac
 done
 
-[[ "${EUID}" -eq 0 ]] || die "请用 root 运行：sudo bash install.sh --deepseek-key sk-xxx"
+[[ "${EUID}" -eq 0 ]] || die "请用 root 运行：curl -fsSL <install.sh> | sudo bash"
 
 if [[ "${UNINSTALL}" == "1" ]]; then
   info "停止并移除服务"
@@ -129,6 +205,7 @@ trap cleanup EXIT
 
 # ---------------------------------------------------------------- 1. 系统依赖
 title "1/7 安装系统依赖"
+setup_apt_mirror "${APT_MIRROR}"
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv python3-pip curl wget unzip rsync ca-certificates tzdata >/dev/null
 info "Python: $(python3 -V)"
@@ -174,7 +251,7 @@ if [[ -z "${SRC_ROOT}" ]]; then
     warn "源码下载失败（${REPO} / ${BRANCH}）。可选办法："
     warn "  1) 先把仓库镜像到 Gitee，再加 --gitee 重跑本命令"
     warn "  2) 在能联网的机器上 git clone 后把整个目录上传到服务器，然后执行："
-    warn "     cd 项目目录 && sudo bash deploy/install.sh --deepseek-key sk-你的密钥"
+    warn "     cd 项目目录 && sudo bash deploy/install.sh（会提示输入 DeepSeek Key）"
     die "无法获取源码，已退出"
   fi
 
@@ -215,6 +292,44 @@ existing_key() {
     | sed -E 's/^[[:space:]]*key:[[:space:]]*//' | tr -d "\"'" || true
 }
 
+# 交互式读取 DeepSeek API Key。
+# 注意：curl | bash 时 stdin 是脚本本身，必须从 /dev/tty 读取，否则会把脚本内容吃掉。
+prompt_deepseek_key() {
+  local attempt=1 value=""
+  while [[ ${attempt} -le 3 ]]; do
+    {
+      printf '\n'
+      printf '%s请粘贴 DeepSeek API Key%s\n' "${BOLD}" "${NC}"
+      printf '  · 申请地址：https://platform.deepseek.com （形如 sk-xxxxxxxx）\n'
+      printf '  · 输入内容不会显示在屏幕上，粘贴后直接按回车\n'
+      printf 'DeepSeek API Key: '
+    } > /dev/tty
+
+    value=""
+    IFS= read -r -s value < /dev/tty || true
+    printf '\n' > /dev/tty
+    # 去掉粘贴时可能带上的空格/换行/引号
+    value="$(printf '%s' "${value}" | tr -d "[:space:]'\"")"
+
+    if [[ -z "${value}" ]]; then
+      warn "没有读到内容，请重试（${attempt}/3）"
+    elif [[ "${value}" != sk-* || ${#value} -lt 20 ]]; then
+      warn "这看起来不像 DeepSeek Key（应以 sk- 开头且长度较长）：${value:0:8}…"
+      if [[ ${attempt} -eq 3 ]]; then
+        warn "仍按你输入的内容继续（可用 --skip-key-test 跳过校验）"
+        DEEPSEEK_KEY="${value}"
+        return 0
+      fi
+    else
+      DEEPSEEK_KEY="${value}"
+      info "已读取 API Key：${value:0:6}…${value: -4}（共 ${#value} 位）"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 if [[ -z "${DEEPSEEK_KEY}" ]]; then
   DEEPSEEK_KEY="$(existing_key)"
   [[ -n "${DEEPSEEK_KEY}" ]] && info "复用已有配置中的 DeepSeek Key"
@@ -222,9 +337,7 @@ fi
 
 if [[ -z "${DEEPSEEK_KEY}" ]]; then
   if [[ -c /dev/tty ]]; then
-    printf '%s请输入 DeepSeek API Key（在 https://platform.deepseek.com 申请，形如 sk-xxxx）：%s\n' "${BOLD}" "${NC}" > /dev/tty
-    read -r -s -p "DeepSeek API Key: " DEEPSEEK_KEY < /dev/tty || true
-    printf '\n' > /dev/tty
+    prompt_deepseek_key || true
   fi
 fi
 
@@ -232,14 +345,19 @@ if [[ -z "${DEEPSEEK_KEY}" ]]; then
   cat >&2 <<EOF
 ${RED}[错误]${NC} 未提供 DeepSeek API Key，无法启用自动做题。
 
-请改用下面任意一种方式重新部署（Key 只在服务器上使用，不会外传）：
-  curl -fsSL https://raw.githubusercontent.com/${REPO}/${BRANCH}/deploy/install.sh | sudo bash -s -- --deepseek-key sk-你的密钥
+当前环境没有可交互的终端（例如通过 CI/脚本调用），请改用下面任意一种方式：
+  1) 重新执行并跟随提示输入 Key：
+     curl -fsSL https://gitee.com/${REPO}/raw/${BRANCH}/deploy/install.sh | sudo bash
 
-或先导出环境变量：
-  export DEEPSEEK_API_KEY=sk-你的密钥
-  curl -fsSL .../install.sh | sudo -E bash -s
+  2) 用参数直接传入（适合自动化）：
+     curl -fsSL https://gitee.com/${REPO}/raw/${BRANCH}/deploy/install.sh | sudo bash -s -- --deepseek-key sk-你的密钥
 
-或部署完成后编辑 ${ETC_DIR}/config.yaml 的 answer.providers[0].key 并重启服务。
+  3) 或先导出环境变量：
+     export DEEPSEEK_API_KEY=sk-你的密钥
+     curl -fsSL https://gitee.com/${REPO}/raw/${BRANCH}/deploy/install.sh | sudo -E bash
+
+Key 只在服务器本地使用，不会外传。部署完成后也可以手动编辑
+${ETC_DIR}/config.yaml 的 answer.providers[0].key 再 systemctl restart chaoxing-web chaoxing-serve。
 EOF
   exit 1
 fi
@@ -359,7 +477,10 @@ else
   warn "Web 控制台自检失败，请查看：journalctl -u chaoxing-web -n 50"
 fi
 
+# 公网 IP：优先国外服务，失败则用国内服务，最后退回本机网卡地址
 PUBLIC_IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+[[ -z "${PUBLIC_IP}" ]] && PUBLIC_IP="$(curl -fsS --max-time 5 https://ip.3322.net 2>/dev/null | tr -d '[:space:]' || true)"
+[[ -z "${PUBLIC_IP}" ]] && PUBLIC_IP="$(curl -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '[:space:]' || true)"
 [[ -z "${PUBLIC_IP}" ]] && PUBLIC_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [[ -z "${PUBLIC_IP}" ]] && PUBLIC_IP="<服务器IP>"
 
@@ -375,6 +496,7 @@ ${GREEN}${BOLD}部署完成 ✅${NC}
   ${BOLD}DeepSeek${NC}：${MODEL} @ ${BASE_URL}
   ${BOLD}配置文件${NC}：${ETC_DIR}/config.yaml
   ${BOLD}数据目录${NC}：${DATA_DIR}
+  ${BOLD}代码来源${NC}：${GIT_HOST} ${REPO}@${BRANCH}
 
   ${BOLD}浏览器打不开控制台？${NC}
   国内直连国外服务器的非标准端口（如 ${WEB_PORT}）常被运营商拦截，此时用 SSH 隧道最稳：

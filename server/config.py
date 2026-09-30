@@ -618,7 +618,8 @@ def _validate_provider(account: str, provider: ProviderConfig) -> list[str]:
         elif not key.isascii() or "替换" in key or "你的" in key or key.endswith("xxx"):
             problems.append(
                 f"账号 {account}: AI provider 的 key 还是模板占位符，"
-                f"请填写真实 API Key（部署脚本 --deepseek-key，或把 answer.providers 留空关闭答题）"
+                f"请填写真实 API Key（重新运行部署脚本并按提示输入，"
+                f"或把 answer.providers 留空关闭答题）"
             )
         if not (options.get("base_url") or options.get("endpoint")):
             problems.append(

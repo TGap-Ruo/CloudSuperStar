@@ -542,7 +542,7 @@ async function loadMeta() {
     } else {
       badge.textContent = '未配置 DeepSeek Key';
       badge.className = 'badge bad';
-      toast('未配置 DeepSeek API Key：无法自动做题。请重新运行部署脚本并带上 --deepseek-key', 'error');
+      toast('未配置 DeepSeek API Key：无法自动做题。请重新运行部署脚本，按提示输入 Key', 'error');
     }
     document.getElementById('badgeVersion').textContent = 'v' + (meta.version || '-');
     renderStats(meta.stats || {});

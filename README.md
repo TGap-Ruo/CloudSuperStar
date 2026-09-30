@@ -10,18 +10,37 @@
 
 ---
 
-## 一行命令部署（必须带上 DeepSeek API Key）
+## 一行命令部署（国内服务器推荐 Gitee 源）
 
 在 **Ubuntu 20.04+（推荐 22.04 / 24.04）** 服务器上以 root 执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh \
-  | sudo bash -s -- --deepseek-key sk-你的DeepSeek密钥
+curl -fsSL https://gitee.com/tgap/cloud-super-star/raw/main/deploy/install.sh | sudo bash
 ```
 
-* **必须提供 DeepSeek API Key**（在 <https://platform.deepseek.com> 申请）。没带 `--deepseek-key` 时脚本会交互式提示输入；既没带参数又没有终端时直接报错并给出用法。
-* 脚本会校验 Key 是否可用（`--skip-key-test` 可跳过），随后自动：安装依赖 → 部署到 `/opt/chaoxing` → 写配置 `/etc/chaoxing/config.yaml` → 安装并启动 `chaoxing-web`（控制台）与 `chaoxing-serve`（定时调度）→ 放行防火墙端口 → 输出**带访问令牌的控制台地址**。
-* 国内服务器可换 Gitee 源：加 `--gitee`，并把 URL 换成 `https://gitee.com/你的仓库/raw/main/deploy/install.sh`。
+执行后脚本会**交互式提示你粘贴 DeepSeek API Key**（输入不显示在屏幕上），不用把 Key 写在命令里：
+
+```
+请粘贴 DeepSeek API Key
+  · 申请地址：https://platform.deepseek.com （形如 sk-xxxxxxxx）
+  · 输入内容不会显示在屏幕上，粘贴后直接按回车
+DeepSeek API Key:
+```
+
+海外服务器或 Gitee 不通时可换 GitHub 源：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy/install.sh | sudo bash
+```
+
+脚本会自动完成：切换国内 apt 镜像（可选）→ 安装依赖 → 从 Gitee 下载源码 → 部署到 `/opt/chaoxing` → 校验 Key（`--skip-key-test` 可跳过）→ 写配置 `/etc/chaoxing/config.yaml` → 安装并启动 `chaoxing-web`（控制台）与 `chaoxing-serve`（定时调度）→ 放行防火墙端口 → 输出**带访问令牌的控制台地址**。
+
+国内环境适配点：
+
+* 代码默认从 **Gitee** 下载（GitHub 作为备用地址自动重试）
+* pip 默认走清华镜像；apt 源在检测到官方源且国内镜像可达时自动切换为阿里云（失败自动还原）
+* Key 支持交互式输入，不必出现在命令行历史里
+* 时间显示与定时任务时区可用 `--timezone Asia/Shanghai` 指定
 
 部署完成后终端会打印形如下面的地址，浏览器直接打开即可：
 
@@ -33,12 +52,15 @@ curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy
 
 | 参数 | 说明 |
 | --- | --- |
-| `--deepseek-key sk-xxx` | **必填**，用于一键做题 |
+| `--deepseek-key sk-xxx` | 直接提供 Key（默认改为交互式输入，此项供自动化脚本使用） |
 | `--model deepseek-chat` | 答题模型（也可换 deepseek-reasoner 等） |
 | `--port 8765` | 控制台端口 |
+| `--timezone Asia/Shanghai` | 定时任务时区（服务器是 UTC 时会告警） |
 | `--token XXX` / `--no-token` | 指定或关闭访问令牌（默认随机生成） |
 | `--max-parallel 8` | 同时运行的任务数上限 |
-| `--gitee` / `--repo owner/name` / `--branch main` | 代码来源 |
+| `--apt-mirror auto\|aliyun\|tsinghua\|none` | apt 源切换策略（默认 auto 自动判断） |
+| `--pip-index URL` | pip 源，默认清华镜像 |
+| `--gitee` / `--github` / `--repo owner/name` / `--branch main` | 代码来源（默认 gitee + tgap/cloud-super-star） |
 | `--skip-key-test` | 跳过 Key 联网校验（离线或自建中转时使用） |
 | `--no-firewall` | 不修改 ufw 规则 |
 | `--uninstall` | 卸载服务（保留配置与数据） |
