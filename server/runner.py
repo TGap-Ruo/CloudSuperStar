@@ -663,6 +663,7 @@ def run_account(
     # 通过环境变量传入，定时任务没有任务号时按账号聚合。
     usage_task_id = os.environ.get("CX_TASK_ID", "")
     usage_user = os.environ.get("CX_USER", "")
+    usage_code = os.environ.get("CX_CODE", "")
     try:
         from server.usage import UsageContext, install_usage_hook
 
@@ -670,6 +671,7 @@ def run_account(
             data.db,
             UsageContext(
                 user=usage_user,
+                code=usage_code,
                 account=account.name,
                 task_id=usage_task_id,
                 run_id=report.run_id,

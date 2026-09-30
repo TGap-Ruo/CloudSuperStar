@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""服务鉴权：用户、角色、额度（卡密）、会话、审计日志。
+"""服务鉴权：授权码（主）、用户（可选）、会话、审计日志。
 
 设计要点
 --------
-* **用户**：管理员在后台创建，分为 ``admin`` / ``user`` 两种角色。普通用户
-  登录后才能使用刷课控制台，并受「剩余次数 + 每日任务上限 + 并发上限」约束。
-* **卡密**：管理员批量生成，支持 无限次数 / 有限次数 / 单次 三种类型。
-  用户在前台输入卡密兑换成自己的刷课次数（``credits``）；管理员也可以直接给用户充值。
-* **额度扣减**：每次真正启动一个刷课任务扣 1 次（可配），任务失败自动退还。
-  每一笔扣减都写进 ``credit_usages``，既能算每日任务数，也能做审计。
-* **审计**：登录、创建用户、生成卡密、扣费、退款等敏感操作全部记录。
+* **授权码是主要方式**：管理员批量生成，每张授权码就是一个"次数包"——
+  ``uses`` 是总次数，跑一次刷课程序消耗 1 次（一次里刷几门课、几个章节都算 1 次）。
+  授权码是独立实体，**不能充值到用户账号上**。
+* **用户可选**：也可以给用户账号配额度（``credits``）。前台允许不登录直接跑，
+  只要求"填了授权码"或者"已登录且用户还有额度"。
+* **优先级**：授权码与用户额度同时存在时，**优先扣授权码**。
+* **失败不扣次数**：只有任务正常跑起来才扣；任务失败（如学习通账号密码错误）自动退还。
+* **审计**：登录、建用户、生成授权码、扣次、退次等操作全部记录。
 
 用户表里存的是 PBKDF2-SHA256 加盐哈希，不存明文密码。
 """
@@ -33,16 +34,6 @@ logger = logging.getLogger("chaoxing.auth")
 
 ROLE_ADMIN = "admin"
 ROLE_USER = "user"
-
-CODE_UNLIMITED = "unlimited"
-CODE_LIMITED = "limited"
-CODE_SINGLE = "single"
-
-CODE_TYPE_LABELS = {
-    CODE_UNLIMITED: "无限次数",
-    CODE_LIMITED: "有限次数",
-    CODE_SINGLE: "单次授权",
-}
 
 UNLIMITED_CREDITS = -1
 CODE_LENGTH = 10
@@ -68,13 +59,10 @@ AUTH_SCHEMA = (
     ");"
     "CREATE TABLE IF NOT EXISTS auth_codes ("
     " code TEXT PRIMARY KEY,"
-    " type TEXT NOT NULL DEFAULT 'single',"
     " name TEXT DEFAULT '',"
     " note TEXT DEFAULT '',"
-    " max_uses INTEGER NOT NULL DEFAULT 1,"
-    " used_count INTEGER NOT NULL DEFAULT 0,"
-    " credits INTEGER NOT NULL DEFAULT 1,"
-    " bound_user TEXT DEFAULT '',"
+    " uses INTEGER NOT NULL DEFAULT 1,"
+    " used INTEGER NOT NULL DEFAULT 0,"
     " enabled INTEGER NOT NULL DEFAULT 1,"
     " created_at TEXT NOT NULL,"
     " updated_at TEXT DEFAULT '',"
@@ -85,6 +73,7 @@ AUTH_SCHEMA = (
     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " at TEXT NOT NULL,"
     " user TEXT DEFAULT '',"
+    " code TEXT DEFAULT '',"
     " task_id TEXT DEFAULT '',"
     " cost INTEGER NOT NULL DEFAULT 1,"
     " kind TEXT DEFAULT 'task',"
@@ -150,7 +139,34 @@ class AuthManager:
     def __init__(self, db_path: str | Path):
         self.store = Store(db_path)
         self.store.executescript(AUTH_SCHEMA)
+        self._migrate()
         self._lock = threading.RLock()
+
+    def _columns(self, table: str) -> set[str]:
+        rows = self.store.query(f"PRAGMA table_info({table})")
+        return {str(row.get("name")) for row in rows}
+
+    def _migrate(self) -> None:
+        """兼容旧版本数据库：把老的卡密表（type/max_uses/credits）迁到新结构。"""
+        columns = self._columns("auth_codes")
+        if "uses" not in columns:
+            self.store.execute("ALTER TABLE auth_codes ADD COLUMN uses INTEGER NOT NULL DEFAULT 1")
+            if "max_uses" in columns:
+                if "type" in columns:
+                    self.store.execute(
+                        "UPDATE auth_codes SET uses = CASE WHEN type = 'unlimited' THEN -1"
+                        " ELSE max_uses END"
+                    )
+                else:
+                    self.store.execute("UPDATE auth_codes SET uses = max_uses")
+        if "used" not in columns:
+            self.store.execute("ALTER TABLE auth_codes ADD COLUMN used INTEGER NOT NULL DEFAULT 0")
+            if "used_count" in columns:
+                self.store.execute("UPDATE auth_codes SET used = used_count")
+        if "user" not in self._columns("api_keys"):
+            pass  # api_keys 结构未变
+        if "code" not in self._columns("credit_usages"):
+            self.store.execute("ALTER TABLE credit_usages ADD COLUMN code TEXT DEFAULT ''")
 
     # ────────────────────────────── 用户
     def _user_row(self, username: str) -> Optional[dict[str, Any]]:
@@ -324,8 +340,9 @@ class AuthManager:
         )
         return int(rows[0]["n"]) if rows else 0
 
-    def consume(self, username: str, task_id: str, cost: int = 1, detail: str = "") -> dict[str, Any]:
-        """扣减一次额度（原子），返回最新用户信息。"""
+    def consume_user_credit(self, username: str, task_id: str, cost: int = 1,
+                            detail: str = "") -> dict[str, Any]:
+        """扣减用户的额度（原子），返回最新用户信息。"""
         with self._lock:
             status = self.quota_status(username)
             if not status.get("ok"):
@@ -338,16 +355,63 @@ class AuthManager:
                     (credits - cost, now_str(), username),
                 )
             self.store.execute(
-                "INSERT INTO credit_usages (at, user, task_id, cost, kind, detail)"
-                " VALUES (?, ?, ?, ?, 'task', ?)",
+                "INSERT INTO credit_usages (at, user, code, task_id, cost, kind, detail)"
+                " VALUES (?, ?, '', ?, ?, 'task', ?)",
                 (now_str(), username, task_id, cost, detail),
             )
         return self.get_user(username) or {}
 
+    def consume_code(self, code: str, task_id: str, user: str = "") -> dict[str, Any]:
+        """核销授权码 1 次（原子）。"""
+        code = (code or "").strip().upper()
+        with self._lock:
+            ok, message, info = self.verify_code(code)
+            if not ok or not info:
+                raise AuthError(message)
+            self.store.execute(
+                "UPDATE auth_codes SET used = used + 1, last_used_at = ?, updated_at = ?"
+                " WHERE code = ?",
+                (now_str(), now_str(), code),
+            )
+            self.store.execute(
+                "INSERT INTO credit_usages (at, user, code, task_id, cost, kind, detail)"
+                " VALUES (?, ?, ?, ?, 1, 'code', ?)",
+                (now_str(), user, code, task_id, "授权码核销"),
+            )
+            after = self.get_code(code) or {}
+        return {"code": code, "remaining": after.get("remaining"),
+                "remaining_label": after.get("remaining_label"), "info": after}
+
+    def consume(self, *, task_id: str, code: str = "", user: str = "",
+                detail: str = "") -> dict[str, Any]:
+        """统一扣次入口：**优先扣授权码**，没有授权码才扣登录用户的额度。
+
+        返回 {"source": "code"|"user", "label": 剩余次数文案, "remaining": ...}
+        """
+        if code:
+            result = self.consume_code(code, task_id, user=user)
+            return {
+                "source": "code",
+                "code": result["code"],
+                "remaining": result["remaining"],
+                "remaining_label": result["remaining_label"],
+            }
+        if user:
+            self.consume_user_credit(user, task_id, detail=detail)
+            info = self.get_user(user) or {}
+            return {
+                "source": "user",
+                "user": user,
+                "remaining": info.get("credits"),
+                "remaining_label": info.get("credits_label", "0 次"),
+            }
+        raise AuthError("请填写授权码，或登录后使用账号额度")
+
     def refund(self, task_id: str) -> bool:
-        """任务失败时退还额度（按 task_id 找回那笔扣减）。"""
+        """任务失败时退次（授权码退给授权码，用户额度退给用户）。"""
         rows = self.store.query(
-            "SELECT id, user, cost FROM credit_usages WHERE task_id = ? AND refunded = 0",
+            "SELECT id, user, code, cost, kind FROM credit_usages"
+            " WHERE task_id = ? AND refunded = 0",
             (task_id,),
         )
         if not rows:
@@ -355,12 +419,19 @@ class AuthManager:
         with self._lock:
             for row in rows:
                 self.store.execute("UPDATE credit_usages SET refunded = 1 WHERE id = ?", (row["id"],))
-                user = self._user_row(row["user"])
-                if user and int(user.get("credits", 0)) >= 0:
+                if row.get("kind") == "code" and row.get("code"):
                     self.store.execute(
-                        "UPDATE users SET credits = credits + ?, updated_at = ? WHERE username = ?",
-                        (int(row["cost"]), now_str(), row["user"]),
+                        "UPDATE auth_codes SET used = CASE WHEN used > 0 THEN used - 1 ELSE 0 END,"
+                        " updated_at = ? WHERE code = ?",
+                        (now_str(), row["code"]),
                     )
+                elif row.get("user"):
+                    user = self._user_row(row["user"])
+                    if user and int(user.get("credits", 0)) >= 0:
+                        self.store.execute(
+                            "UPDATE users SET credits = credits + ?, updated_at = ? WHERE username = ?",
+                            (int(row["cost"]), now_str(), row["user"]),
+                        )
         return True
 
     def credit_usages(self, *, user: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -375,24 +446,27 @@ class AuthManager:
             )
         return rows
 
-    # ────────────────────────────── 卡密
+    def code_usages(self, code: str, limit: int = 100) -> list[dict[str, Any]]:
+        return self.store.query(
+            "SELECT * FROM credit_usages WHERE code = ? ORDER BY id DESC LIMIT ?",
+            ((code or "").strip().upper(), max(1, limit)),
+        )
+
+    # ────────────────────────────── 授权码
     def create_codes(
         self,
         *,
-        code_type: str = CODE_SINGLE,
         count: int = 1,
-        credits: int = 1,
+        uses: int = 1,
         name: str = "",
         note: str = "",
-        max_uses: int = 1,
-        bound_user: str = "",
         expires_at: str = "",
     ) -> list[str]:
-        if code_type not in CODE_TYPE_LABELS:
-            raise AuthError("卡密类型只能是 unlimited / limited / single")
-        count = max(1, min(200, int(count)))
-        if code_type == CODE_SINGLE:
-            max_uses = 1
+        """批量生成授权码。uses = 这张授权码能跑几次（-1 表示不限）。"""
+        count = max(1, min(500, int(count)))
+        uses = int(uses)
+        if uses == 0 or uses < -1:
+            raise AuthError("次数必须是正整数，或填 -1 表示不限次数")
         created: list[str] = []
         with self._lock:
             for _ in range(count):
@@ -400,21 +474,10 @@ class AuthManager:
                 while self._code_row(code):
                     code = generate_code()
                 self.store.execute(
-                    "INSERT INTO auth_codes (code, type, name, note, max_uses, credits,"
-                    " bound_user, enabled, created_at, updated_at, expires_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
-                    (
-                        code,
-                        code_type,
-                        name,
-                        note,
-                        max(1, int(max_uses)),
-                        max(1, int(credits)),
-                        bound_user,
-                        now_str(),
-                        now_str(),
-                        expires_at,
-                    ),
+                    "INSERT INTO auth_codes (code, name, note, uses, used, enabled,"
+                    " created_at, updated_at, expires_at)"
+                    " VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?)",
+                    (code, name, note, uses, now_str(), now_str(), expires_at),
                 )
                 created.append(code)
         return created
@@ -424,34 +487,37 @@ class AuthManager:
         return rows[0] if rows else None
 
     @staticmethod
-    def _code_public(row: dict[str, Any]) -> dict[str, Any]:
-        unlimited = row.get("type") == CODE_UNLIMITED
-        remaining = None if unlimited else max(0, int(row.get("max_uses", 1)) - int(row.get("used_count", 0)))
-        expired = False
-        if row.get("expires_at"):
+    def _is_past(value: Any) -> bool:
+        if not value:
+            return False
+        text = str(value)
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
             try:
-                expired = datetime.now() > datetime.strptime(str(row["expires_at"]), "%Y-%m-%d %H:%M:%S")
+                moment = datetime.strptime(text, fmt)
+                if fmt == "%Y-%m-%d":
+                    moment = moment.replace(hour=23, minute=59, second=59)
+                return datetime.now() > moment
             except ValueError:
-                try:
-                    expired = datetime.now() > datetime.strptime(str(row["expires_at"]), "%Y-%m-%d").replace(
-                        hour=23, minute=59, second=59
-                    )
-                except ValueError:
-                    expired = False
+                continue
+        return False
+
+    @classmethod
+    def _code_public(cls, row: dict[str, Any]) -> dict[str, Any]:
+        uses = int(row.get("uses", 1) or 0)
+        used = int(row.get("used", 0) or 0)
+        unlimited = uses < 0
+        remaining = None if unlimited else max(0, uses - used)
         return {
             "code": row.get("code"),
-            "type": row.get("type"),
-            "type_label": CODE_TYPE_LABELS.get(str(row.get("type")), str(row.get("type"))),
             "name": row.get("name", ""),
             "note": row.get("note", ""),
-            "credits": int(row.get("credits", 1)),
-            "max_uses": int(row.get("max_uses", 1)),
-            "used_count": int(row.get("used_count", 0)),
+            "uses": uses,
+            "used": used,
             "remaining": remaining,
-            "remaining_label": "无限" if unlimited else f"{remaining} 次",
-            "bound_user": row.get("bound_user", ""),
+            "remaining_label": "不限次数" if unlimited else f"剩余 {remaining} 次",
+            "unlimited": unlimited,
             "enabled": bool(row.get("enabled")),
-            "expired": expired,
+            "expired": cls._is_past(row.get("expires_at")),
             "created_at": row.get("created_at", ""),
             "expires_at": row.get("expires_at", ""),
             "last_used_at": row.get("last_used_at", ""),
@@ -471,52 +537,29 @@ class AuthManager:
             )
         return [self._code_public(row) for row in rows]
 
+    def get_code(self, code: str) -> Optional[dict[str, Any]]:
+        row = self._code_row(code)
+        return self._code_public(row) if row else None
+
     def verify_code(self, code: str) -> tuple[bool, str, dict[str, Any] | None]:
+        code = (code or "").strip().upper()
+        if not code:
+            return False, "请输入授权码", None
         row = self._code_row(code)
         if not row:
-            return False, "卡密不存在", None
+            return False, "授权码不存在", None
         info = self._code_public(row)
         if not info["enabled"]:
-            return False, "该卡密已被禁用", info
+            return False, "该授权码已被禁用", info
         if info["expired"]:
-            return False, "该卡密已过期", info
+            return False, "该授权码已过期", info
         if info["remaining"] is not None and info["remaining"] <= 0:
-            return False, "该卡密使用次数已用尽", info
-        return True, "卡密有效", info
-
-    def redeem_code(self, code: str, username: str) -> dict[str, Any]:
-        """用户用卡密兑换刷课次数：给用户加 credits，并消耗卡密一次。"""
-        with self._lock:
-            ok, message, info = self.verify_code(code)
-            if not ok or not info:
-                raise AuthError(message)
-            if info.get("bound_user") and info["bound_user"] != username:
-                raise AuthError("该卡密已绑定其它用户")
-            user = self._user_row(username)
-            if not user:
-                raise AuthError("用户不存在")
-
-            credits = int(info.get("credits", 1))
-            if int(user.get("credits", 0)) >= 0:
-                self.store.execute(
-                    "UPDATE users SET credits = credits + ?, updated_at = ? WHERE username = ?",
-                    (credits, now_str(), username),
-                )
-            self.store.execute(
-                "UPDATE auth_codes SET used_count = used_count + 1, last_used_at = ?,"
-                " updated_at = ? WHERE code = ?",
-                (now_str(), now_str(), info["code"]),
-            )
-            self.store.execute(
-                "INSERT INTO credit_usages (at, user, task_id, cost, kind, detail)"
-                " VALUES (?, ?, '', ?, 'redeem', ?)",
-                (now_str(), username, -credits, f"卡密 {info['code']} 兑换 {credits} 次"),
-            )
-        return {"code": info["code"], "credits": credits, "user": self.get_user(username) or {}}
+            return False, "该授权码可用次数已用尽", info
+        return True, "授权码有效", info
 
     def toggle_code(self, code: str, enabled: bool) -> None:
         if not self._code_row(code):
-            raise AuthError("卡密不存在")
+            raise AuthError("授权码不存在")
         self.store.execute(
             "UPDATE auth_codes SET enabled = ?, updated_at = ? WHERE code = ?",
             (1 if enabled else 0, now_str(), (code or "").strip().upper()),
@@ -524,10 +567,18 @@ class AuthManager:
 
     def reset_code(self, code: str) -> None:
         if not self._code_row(code):
-            raise AuthError("卡密不存在")
+            raise AuthError("授权码不存在")
         self.store.execute(
-            "UPDATE auth_codes SET used_count = 0, updated_at = ? WHERE code = ?",
+            "UPDATE auth_codes SET used = 0, updated_at = ? WHERE code = ?",
             (now_str(), (code or "").strip().upper()),
+        )
+
+    def set_code_uses(self, code: str, uses: int) -> None:
+        if not self._code_row(code):
+            raise AuthError("授权码不存在")
+        self.store.execute(
+            "UPDATE auth_codes SET uses = ?, updated_at = ? WHERE code = ?",
+            (int(uses), now_str(), (code or "").strip().upper()),
         )
 
     def delete_code(self, code: str) -> None:
@@ -594,7 +645,7 @@ class AuthManager:
         codes = self.store.query(
             "SELECT COUNT(*) AS total,"
             " COALESCE(SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled,"
-            " COALESCE(SUM(used_count), 0) AS used"
+            " COALESCE(SUM(used), 0) AS used"
             " FROM auth_codes"
         )
         consumed = self.store.query(

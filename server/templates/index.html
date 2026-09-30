@@ -143,11 +143,13 @@
   <div class="header-badges">
     <span class="badge" id="badgeDeepseek">检测 DeepSeek…</span>
     <span class="badge" id="badgeStats">运行中 0</span>
-    <span class="badge" id="badgeCredits">额度 {{ quota.credits_label if quota else '-' }}</span>
-    <span class="badge">{% if user %}{{ user.username }}（{{ '管理员' if user.role == 'admin' else '用户' }}）{% else %}未登录{% endif %}</span>
-    {% if auth_enabled %}<span class="badge" style="cursor:pointer" onclick="openRedeem()">兑换卡密</span>{% endif %}
-    {% if user and user.role == 'admin' %}<a class="badge" href="{{ admin_path }}" style="text-decoration:none">管理后台</a>{% endif %}
-    {% if auth_enabled %}<a class="badge" href="/logout" style="text-decoration:none">退出</a>{% endif %}
+    <span class="badge" id="badgeQuota">未填授权码</span>
+    {% if user %}
+      <span class="badge">{{ user.username }}（{{ '管理员' if user.role == 'admin' else '用户' }} · 额度 {{ quota.credits_label if quota else '-' }}）</span>
+      <a class="badge" href="/logout" style="text-decoration:none">退出</a>
+    {% else %}
+      <a class="badge" href="/login" style="text-decoration:none">登录（可选）</a>
+    {% endif %}
     <span class="badge" id="badgeVersion">v—</span>
   </div>
 </div>
@@ -160,6 +162,15 @@
         <div class="tabs">
           <div class="tab active" data-mode="single" onclick="switchTab('single')">单个账号</div>
           <div class="tab" data-mode="batch" onclick="switchTab('batch')">批量并行</div>
+        </div>
+
+        <div class="field">
+          <label>授权码（选填）</label>
+          <input type="text" id="authCode" placeholder="填写后本次消耗授权码次数" autocomplete="off"
+                 style="text-transform:uppercase" oninput="refreshQuotaBadge()">
+          <div class="hint" style="margin-top:6px" id="quotaHint">
+            不填授权码时，需要用登录账号的额度；两者都没有则无法开始。
+          </div>
         </div>
 
         <div id="paneSingle">
@@ -293,16 +304,15 @@
   </div>
 </div>
 
-<div class="modal" id="redeemModal" style="display:none">
-  <div class="card" style="width:420px">
-    <div class="card-head">兑换卡密</div>
+<div class="modal" id="consumeModal" style="display:none">
+  <div class="card" style="width:440px">
+    <div class="card-head">确认开始刷课</div>
     <div class="card-body">
-      <div class="hint" style="margin-bottom:10px">输入管理员发放的卡密，兑换刷课次数。</div>
-      <div class="field">
-        <input type="text" id="redeemCode" placeholder="例如 A1B2C3D4E5" style="text-transform:uppercase">
+      <div id="consumeBody" class="hint" style="line-height:1.9"></div>
+      <div class="row" style="margin-top:16px;gap:10px">
+        <button class="btn btn-primary" id="consumeOkBtn" onclick="confirmConsume()">确认并开始</button>
+        <button class="btn btn-default" onclick="cancelConsume()">取消</button>
       </div>
-      <button class="btn btn-primary" id="redeemBtn" onclick="submitRedeem()">兑换</button>
-      <div class="hint" style="margin-top:10px">当前额度：<b id="redeemCredits">{{ quota.credits_label if quota else '-' }}</b></div>
     </div>
   </div>
 </div>
@@ -331,40 +341,27 @@
 </div>
 
 <script>
-const HAS_TOKEN = "{{ has_token }}" === "1";
 const MAX_PARALLEL = {{ max_parallel }};
+const LOGGED_IN = {{ 'true' if user else 'false' }};
 
 let tasks = [];
 let currentTaskId = null;
 let eventSource = null;
 let pollTimer = null;
 
-/* ───────────── 访问令牌 ───────────── */
-function getToken() {
-  const url = new URL(location.href);
-  const fromUrl = url.searchParams.get('token');
-  if (fromUrl) {
-    localStorage.setItem('cx_token', fromUrl);
-    url.searchParams.delete('token');
-    const rest = url.searchParams.toString();
-    history.replaceState(null, '', url.pathname + (rest ? '?' + rest : ''));
-    return fromUrl;
-  }
-  return localStorage.getItem('cx_token') || '';
-}
-function setToken(value) { localStorage.setItem('cx_token', value); }
-
 async function api(path, options) {
   const opts = Object.assign({ headers: {} }, options || {});
-  const token = getToken();
-  if (token) opts.headers['X-Token'] = token;
   if (opts.body && !opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json';
   const resp = await fetch(path, opts);
-  if (resp.status === 401) { showTokenModal(); throw new Error('需要访问令牌'); }
+  if (resp.status === 401) { location.href = '/login'; throw new Error('登录已过期，请重新登录'); }
   const text = await resp.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) { data = { error: text }; }
-  if (!resp.ok) throw new Error((data && (data.error || data.message)) || ('HTTP ' + resp.status));
+  if (!resp.ok) {
+    const err = new Error((data && (data.error || data.message)) || ('HTTP ' + resp.status));
+    err.payload = data;
+    throw err;
+  }
   return data;
 }
 
@@ -419,24 +416,29 @@ async function startTasksDirect() {
   const payload = collectOptions();
   payload.accounts_text = document.getElementById('accountsText').value;
   if (!payload.accounts_text.trim()) { toast('请粘贴账号列表', 'error'); return; }
+  const accountCount = payload.accounts_text.split('\n')
+    .filter(function (line) { return line.trim() && line.trim().charAt(0) !== '#'; }).length;
+  payload.code = currentCode();
 
-  const btn = document.getElementById('startBtn');
-  btn.disabled = true;
-  btn.textContent = '启动中…';
-  try {
-    const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify(payload) });
-    const started = data.started || [];
-    const errors = data.errors || [];
-    toast('已启动 ' + started.length + ' 个任务' + (errors.length ? '，' + errors.length + ' 个失败' : ''), 'ok');
-    errors.slice(0, 3).forEach(function (e) { toast(e.username + ': ' + e.error, 'error'); });
-    await loadTasks();
-    if (started.length) selectTask(started[0].id);
-  } catch (err) {
-    toast(err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '开始刷课';
-  }
+  await askConsume(Math.max(1, accountCount), async function () {
+    const btn = document.getElementById('startBtn');
+    btn.disabled = true;
+    btn.textContent = '启动中…';
+    try {
+      const data = await api('/api/tasks', { method: 'POST', body: JSON.stringify(payload) });
+      const started = data.started || [];
+      const errors = data.errors || [];
+      toast('已启动 ' + started.length + ' 个任务' + (errors.length ? '，' + errors.length + ' 个失败' : ''), 'ok');
+      errors.slice(0, 3).forEach(function (e) { toast(e.username + ': ' + e.error, 'error'); });
+      await loadTasks();
+      if (started.length) selectTask(started[0].id);
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '开始刷课';
+    }
+  });
 }
 
 /* ───────────── 课程选择弹窗 ───────────── */
@@ -448,6 +450,7 @@ async function prepareCourses() {
   delete payload.course_ids;                      // 课程在弹窗里选，这里不预填给后端
   payload.username = document.getElementById('username').value.trim();
   payload.password = document.getElementById('password').value;
+  payload.code = currentCode();
   if (!payload.username) { toast('请输入账号', 'error'); return; }
   if (!payload.password) { toast('请输入密码', 'error'); return; }
 
@@ -535,28 +538,30 @@ function updateCourseCount() {
 
 async function confirmCourses() {
   if (!preparedTask) return;
-  const taskId = preparedTask.task_id;
   const ids = Array.from(selectedCourses);
-  const btn = document.getElementById('confirmCoursesBtn');
-  btn.disabled = true;
-  btn.textContent = '启动中…';
-  try {
-    await api('/api/tasks/' + taskId + '/start', {
-      method: 'POST',
-      body: JSON.stringify({ course_ids: ids })
-    });
-    preparedTask = null;
-    document.getElementById('courseModal').style.display = 'none';
-    document.getElementById('password').value = '';
-    toast(ids.length ? ('已开始刷 ' + ids.length + ' 门课程') : '已开始刷全部课程', 'ok');
-    await loadTasks();
-    selectTask(taskId);
-  } catch (err) {
-    toast(err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '开始刷课';
-  }
+  await askConsume(1, async function () {
+    const taskId = preparedTask.task_id;
+    const btn = document.getElementById('confirmCoursesBtn');
+    btn.disabled = true;
+    btn.textContent = '启动中…';
+    try {
+      await api('/api/tasks/' + taskId + '/start', {
+        method: 'POST',
+        body: JSON.stringify({ course_ids: ids, code: currentCode() })
+      });
+      preparedTask = null;
+      document.getElementById('courseModal').style.display = 'none';
+      document.getElementById('password').value = '';
+      toast(ids.length ? ('已开始刷 ' + ids.length + ' 门课程') : '已开始刷全部课程', 'ok');
+      await loadTasks();
+      selectTask(taskId);
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '开始刷课';
+    }
+  });
 }
 
 async function closeCourseModal() {
@@ -573,7 +578,8 @@ const STATUS_LABEL = { selecting: '选择课程中', running: '运行中', finis
 
 async function loadTasks() {
   try {
-    const data = await api('/api/tasks?limit=100');
+    const code = currentCode();
+    const data = await api('/api/tasks?limit=100' + (code ? '&code=' + encodeURIComponent(code) : ''));
     tasks = data.tasks || [];
     renderTasks();
     renderStats(data.stats || {});
@@ -659,8 +665,8 @@ function selectTask(id) {
     '实时日志 · ' + (task ? (task.display_name || task.username) : id);
   renderTasks();
 
-  const token = getToken();
-  openStream('/api/stream/' + id + (token ? '?token=' + encodeURIComponent(token) : ''));
+  const code = currentCode();
+  openStream('/api/stream/' + id + (code ? '?code=' + encodeURIComponent(code) : ''));
 }
 
 function openStream(url) {
@@ -706,40 +712,105 @@ function classify(line) {
 
 function clearOutput() { document.getElementById('terminal').innerHTML = ''; }
 
-/* ───────────── 卡密兑换 / 额度 ───────────── */
-function openRedeem() {
-  document.getElementById('redeemModal').style.display = 'flex';
-  document.getElementById('redeemCode').value = '';
+/* ───────────── 授权码 / 消耗确认 ───────────── */
+function currentCode() {
+  const el = document.getElementById('authCode');
+  return el ? el.value.trim().toUpperCase() : '';
 }
 
-function closeRedeem() {
-  document.getElementById('redeemModal').style.display = 'none';
+let quotaTimer = null;
+function refreshQuotaBadge() {
+  const badge = document.getElementById('badgeQuota');
+  const hint = document.getElementById('quotaHint');
+  const code = currentCode();
+  if (quotaTimer) clearTimeout(quotaTimer);
+  if (!code) {
+    if (badge) badge.textContent = LOGGED_IN ? '使用账号额度' : '未填授权码';
+    if (hint) hint.textContent = LOGGED_IN
+      ? '未填授权码时消耗登录账号的额度；填了授权码则优先消耗授权码。'
+      : '不填授权码时，需要用登录账号的额度；两者都没有则无法开始。';
+    return;
+  }
+  if (badge) badge.textContent = '校验中…';
+  quotaTimer = setTimeout(async function () {
+    try {
+      const data = await api('/api/quota/check', { method: 'POST', body: JSON.stringify({ code: code }) });
+      const quota = data.quota || {};
+      if (badge) badge.textContent = '授权码 ' + quota.remaining_label;
+      if (hint) {
+        hint.textContent = '授权码有效' + (quota.name ? '（' + quota.name + '）' : '')
+          + '，本次将消耗 1 次，' + quota.remaining_label + '。';
+      }
+    } catch (err) {
+      if (badge) badge.textContent = '授权码无效';
+      if (hint) hint.textContent = err.message;
+    }
+  }, 350);
 }
 
-async function submitRedeem() {
-  const code = document.getElementById('redeemCode').value.trim();
-  if (!code) { toast('请输入卡密', 'error'); return; }
-  const btn = document.getElementById('redeemBtn');
-  btn.disabled = true; btn.textContent = '兑换中…';
+let pendingConsume = null;
+
+async function askConsume(count, run) {
+  let quota = null;
   try {
-    const data = await api('/api/redeem', { method: 'POST', body: JSON.stringify({ code: code }) });
-    const label = (data.quota && data.quota.credits_label) || '-';
-    document.getElementById('redeemCredits').textContent = label;
-    document.getElementById('badgeCredits').textContent = '额度 ' + label;
-    toast('兑换成功，增加 ' + data.credits + ' 次，当前额度 ' + label, 'ok');
-    closeRedeem();
+    const data = await api('/api/quota/check', {
+      method: 'POST',
+      body: JSON.stringify({ code: currentCode() })
+    });
+    quota = data.quota || {};
   } catch (err) {
     toast(err.message, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = '兑换';
+    return;
   }
+  let source;
+  if (quota.source === 'code') {
+    source = '授权码 <b>' + esc(quota.code) + '</b>';
+  } else if (quota.source === 'user') {
+    source = '登录账号 <b>' + esc(quota.user) + '</b> 的额度';
+  } else {
+    source = '服务未开启鉴权（不消耗次数）';
+  }
+  const remaining = quota.remaining_label || '不限';
+  let after = '';
+  if (quota.source === 'code' && typeof quota.remaining === 'number' && quota.remaining >= 0) {
+    after = '，消耗后剩余 ' + Math.max(0, quota.remaining - count) + ' 次';
+  } else if (quota.source === 'user' && typeof quota.remaining === 'number' && quota.remaining >= 0) {
+    after = '，消耗后剩余 ' + Math.max(0, quota.remaining - count) + ' 次';
+  }
+  document.getElementById('consumeBody').innerHTML =
+    '本次将启动 <b>' + count + '</b> 个刷课任务，消耗 <b>' + count + '</b> 次。<br>' +
+    '消耗来源：' + source + '<br>' +
+    '当前剩余：<b>' + esc(remaining) + '</b>' + esc(after) + '<br>' +
+    '<span style="color:var(--muted)">任务失败（例如学习通账号密码错误）会自动把次数退还。</span>';
+  pendingConsume = run;
+  document.getElementById('consumeModal').style.display = 'flex';
+}
+
+async function confirmConsume() {
+  const run = pendingConsume;
+  pendingConsume = null;
+  document.getElementById('consumeModal').style.display = 'none';
+  if (!run) return;
+  const btn = document.getElementById('consumeOkBtn');
+  btn.disabled = true; btn.textContent = '启动中…';
+  try {
+    await run();
+  } finally {
+    btn.disabled = false; btn.textContent = '确认并开始';
+    refreshQuotaBadge();
+  }
+}
+
+function cancelConsume() {
+  pendingConsume = null;
+  document.getElementById('consumeModal').style.display = 'none';
 }
 
 function downloadLog() {
   if (!currentTaskId) return;
-  const token = getToken();
+  const code = currentCode();
   const a = document.createElement('a');
-  a.href = '/api/tasks/' + currentTaskId + '/log' + (token ? '?token=' + encodeURIComponent(token) : '');
+  a.href = '/api/tasks/' + currentTaskId + '/log' + (code ? '?code=' + encodeURIComponent(code) : '');
   a.download = '';
   document.body.appendChild(a);
   a.click();
@@ -790,33 +861,12 @@ async function loadStatus() {
   } catch (err) { /* ignore */ }
 }
 
-/* ───────────── 令牌弹窗 ───────────── */
-function showTokenModal() {
-  if (document.getElementById('tokenModal')) return;
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-  modal.id = 'tokenModal';
-  modal.innerHTML =
-    '<div class="card"><div class="card-head">需要访问令牌</div><div class="card-body">' +
-    '<div class="hint" style="margin-bottom:12px">部署脚本会打印带 token 的访问地址；也可在此粘贴令牌，本机浏览器会记住。</div>' +
-    '<div class="field"><input type="text" id="tokenInput" placeholder="访问令牌"></div>' +
-    '<button class="btn btn-primary" onclick="submitToken()">进入控制台</button></div></div>';
-  document.body.appendChild(modal);
-}
-
-function submitToken() {
-  const value = document.getElementById('tokenInput').value.trim();
-  if (!value) return;
-  setToken(value);
-  document.getElementById('tokenModal').remove();
-  bootstrap();
-}
-
 /* ───────────── 启动 ───────────── */
 function bootstrap() {
   loadMeta();
   loadTasks();
   loadStatus();
+  refreshQuotaBadge();
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(function () { loadTasks(); loadStatus(); }, 5000);
 }
@@ -824,8 +874,10 @@ function bootstrap() {
 document.getElementById('password').addEventListener('keypress', function (e) {
   if (e.key === 'Enter') startTasks();
 });
+document.getElementById('authCode').addEventListener('keypress', function (e) {
+  if (e.key === 'Enter') startTasks();
+});
 
-getToken();
 bootstrap();
 </script>
 </body>

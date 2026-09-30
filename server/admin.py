@@ -15,7 +15,7 @@ from typing import Any, Callable
 import yaml
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file
 
-from server.auth import AuthError, AuthManager, CODE_LIMITED, CODE_SINGLE, CODE_UNLIMITED
+from server.auth import AuthError, AuthManager
 from server.config import ServerConfig
 from server.usage import DEFAULT_PRICING, UsageRecorder, format_cost
 from server.tasks import TaskError, TaskManager
@@ -253,7 +253,7 @@ def create_admin_blueprint(
                  target=key[:12], ip=client_ip())
         return _json_ok()
 
-    # ────────────────────────────── 卡密
+    # ────────────────────────────── 授权码
     @bp.get("/api/codes")
     def api_codes() -> Response:
         denied = _need_admin()
@@ -261,6 +261,8 @@ def create_admin_blueprint(
             return denied
         keyword = request.args.get("q", "")
         codes = auth.list_codes(keyword)
+        for code in codes:
+            code["usage"] = usage.for_code(code["code"])
         return _json_ok(codes=codes, stats=auth.stats().get("codes", {}))
 
     @bp.post("/api/codes")
@@ -269,24 +271,18 @@ def create_admin_blueprint(
         if denied:
             return denied
         payload = request.get_json(silent=True) or {}
-        code_type = str(payload.get("type", CODE_SINGLE))
-        if code_type not in {CODE_UNLIMITED, CODE_LIMITED, CODE_SINGLE}:
-            return _json_error("卡密类型不合法")
         try:
             codes = auth.create_codes(
-                code_type=code_type,
                 count=int(payload.get("count", 1) or 1),
-                credits=int(payload.get("credits", 1) or 1),
+                uses=int(payload.get("uses", 1) or 1),
                 name=str(payload.get("name", "")),
                 note=str(payload.get("note", "")),
-                max_uses=int(payload.get("max_uses", 1) or 1),
-                bound_user=str(payload.get("bound_user", "")),
                 expires_at=str(payload.get("expires_at", "")),
             )
         except AuthError as exc:
             return _json_error(str(exc))
         auth.log("create_codes", actor=(current_user() or {}).get("username", ""),
-                 target=code_type, detail=f"{len(codes)} 张", ip=client_ip())
+                 detail=f"生成 {len(codes)} 张授权码", ip=client_ip())
         return _json_ok(codes=codes)
 
     @bp.post("/api/codes/<code>/toggle")
@@ -315,6 +311,31 @@ def create_admin_blueprint(
         auth.log("reset_code", actor=(current_user() or {}).get("username", ""),
                  target=code, ip=client_ip())
         return _json_ok()
+
+    @bp.post("/api/codes/<code>/uses")
+    def api_set_code_uses(code: str) -> Response:
+        denied = _need_admin()
+        if denied:
+            return denied
+        payload = request.get_json(silent=True) or {}
+        try:
+            auth.set_code_uses(code, int(payload.get("uses", 1)))
+        except (AuthError, TypeError, ValueError) as exc:
+            return _json_error(str(exc) or "次数不合法")
+        auth.log("set_code_uses", actor=(current_user() or {}).get("username", ""),
+                 target=code, detail=f"次数={payload.get('uses')}", ip=client_ip())
+        return _json_ok()
+
+    @bp.get("/api/codes/<code>/usages")
+    def api_code_usages(code: str) -> Response:
+        denied = _need_admin()
+        if denied:
+            return denied
+        return _json_ok(
+            usages=auth.code_usages(code, limit=200),
+            code=auth.get_code(code),
+            usage=usage.for_code(code),
+        )
 
     @bp.delete("/api/codes/<code>")
     def api_delete_code(code: str) -> Response:
@@ -382,7 +403,7 @@ def create_admin_blueprint(
         days = max(1, min(365, request.args.get("days", 30, type=int)))
         since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
         groups: dict[str, Any] = {}
-        for dimension in ("account", "user", "day", "model"):
+        for dimension in ("code", "account", "user", "day", "model"):
             groups[dimension] = usage.group_by(dimension, since=since, limit=200)
         rows = usage.recent(limit=min(500, request.args.get("limit", 100, type=int)))
         for row in rows:

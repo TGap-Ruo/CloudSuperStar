@@ -109,14 +109,16 @@ sudo systemctl restart chaoxing-web chaoxing-serve
   ```
 * 登录失败次数过多会临时封禁该 IP（5 分钟 8 次），等几分钟即可。
 
-**额度/卡密相关**
+**授权码 / 额度相关**
 
-* 提示「刷课次数已用完」：到后台给该用户加额度，或生成卡密让用户自己兑换。
-* 提示「今日任务数已达上限」：用户设置了 `daily_task_limit`，后台可改。
-* 任务失败会自动退还额度；如果没退，检查 `server.refund_on_failure` 是否为 true，
-  以及后台「审计日志」里有没有记录。
-* 卡密提示「已用尽」但你没用过：可能这张卡是"有限次数"类型且 `max_uses` 设小了，
-  后台点「重置」可清零已用次数。
+* 提示「请填写授权码，或登录后使用账号额度」：这次既没填授权码、也没登录（或登录账号额度为 0）。
+  到后台「授权码管理」生成一张发给用户即可。
+* 提示「授权码不存在 / 已禁用 / 已过期 / 可用次数已用尽」：对应原因，后台可以启用、改次数、
+  重置已用次数或改到期时间。
+* 授权码与用户额度**互相独立**：授权码不能充值到用户账号上；同时提供两者时优先扣授权码。
+* 任务失败（如学习通账号密码错误）会自动退还次数；如果没退，检查
+  `server.refund_on_failure` 是否为 true，并在后台「审计日志」里看有没有退款记录。
+* 单个账号模式在"读取课程列表"阶段就会校验学习通密码，密码错时**还没扣次数**，不会有任何消耗。
 
 **费用/token 相关**
 
@@ -129,12 +131,12 @@ sudo systemctl restart chaoxing-web chaoxing-serve
   9-12 点、14-18 点之外）**注意高峰区间是 UTC**，北京时间的高峰是 09:00-12:00 与 14:00-18:00，
   非高峰正好相反——把任务安排在晚上跑更便宜。
 
-**打开页面提示"需要访问令牌" / 接口返回 401**
+**进不去 / 提示要登录（401）**
 
-* 部署脚本会打印形如 `http://IP:8765/?token=xxxx` 的地址，直接用它打开即可（token 会被浏览器记住）。
-* 也可以手动输入令牌：令牌就是 `config.yaml` 里的 `server.web_token`；
-  用 `grep web_token /etc/chaoxing/config.yaml` 查看，或在部署时用 `--token 自定义` 指定。
-* 想彻底关闭令牌校验：把 `web_token` 设为空并重启 `chaoxing-web`（**开放到公网时非常危险，务必配合安全组限制来源 IP**）。
+* 控制台本身**不需要登录**，直接打开 `http://IP:8765/` 就能用；只有几种情况会看到 401：
+  ① 你主动点了「登录」但会话过期；② 访问的是 `/admin/` 后台页面（需要管理员账号）。
+* 登录页在 `/login`，管理员账号密码见部署输出或 `/var/lib/chaoxing/initial_admin_password.txt`。
+* 已不再使用"访问令牌"；旧的 `server.web_token` 配置会被忽略，留空即可。
 
 **页面能打开，但点「开始刷课」没反应 / 一直转圈**
 
@@ -176,7 +178,7 @@ sudo systemctl restart chaoxing-web chaoxing-serve
 **顶部显示"未配置 DeepSeek Key"**
 
 * 说明 `config.yaml` 的 `answer.providers[0].key` 还是占位符或为空，此时无法自动做题。
-* 重新执行部署命令，按提示粘贴 Key 即可（会保留已有账号等配置）：
+* 重新执行部署命令，按提示粘贴 Key 即可（会保留已有授权码、用户等配置）：
   ```bash
   cd /tmp && curl -fsSL -o cx.zip https://gitee.com/tgap/cloud-super-star/repository/archive/main.zip \
     && python3 -m zipfile -e cx.zip cx && sudo bash cx/cloud-super-star-main/deploy/install.sh

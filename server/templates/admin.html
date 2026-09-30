@@ -75,7 +75,7 @@
     <nav class="nav" id="nav">
       <a href="#dashboard" data-tab="dashboard">仪表盘</a>
       <a href="#users" data-tab="users">用户管理</a>
-      <a href="#codes" data-tab="codes">卡密管理</a>
+      <a href="#codes" data-tab="codes">授权码管理</a>
       <a href="#tasks" data-tab="tasks">任务管理</a>
       <a href="#usage" data-tab="usage">用量与费用</a>
       <a href="#audit" data-tab="audit">审计日志</a>
@@ -130,32 +130,27 @@
     </section>
 
     <section id="tab-codes" class="hidden">
-      <h2>卡密管理</h2>
+      <h2>授权码管理</h2>
       <div class="panel">
-        <h3>生成卡密</h3>
+        <h3>生成授权码</h3>
         <div class="row">
-          <div><label>类型</label><select id="nc-type" onchange="onCodeTypeChange()">
-            <option value="single">单次授权</option>
-            <option value="limited">有限次数</option>
-            <option value="unlimited">无限次数</option>
-          </select></div>
           <div><label>数量</label><input id="nc-count" type="number" value="1" style="width:90px"></div>
-          <div><label>每张兑换次数</label><input id="nc-credits" type="number" value="1" style="width:120px"></div>
-          <div id="nc-maxuses-wrap" class="hidden"><label>每张可用次数</label><input id="nc-maxuses" type="number" value="1" style="width:120px"></div>
-          <div><label>名称/归属</label><input id="nc-name" placeholder="XX学校-张三" style="width:160px"></div>
+          <div><label>每张次数（-1 不限）</label><input id="nc-uses" type="number" value="10" style="width:130px"></div>
+          <div><label>名称/归属</label><input id="nc-name" placeholder="XX学校-张三" style="width:170px"></div>
+          <div><label>备注</label><input id="nc-note" placeholder="选填" style="width:170px"></div>
           <div><label>到期时间</label><input id="nc-expires" placeholder="2026-12-31 或留空" style="width:160px"></div>
-          <div><label>绑定用户（选填）</label><input id="nc-bound" placeholder="用户名" style="width:130px"></div>
           <button class="btn" onclick="createCodes()">生成</button>
         </div>
+        </div>
         <div class="hint" style="margin-top:8px">
-          「每张兑换次数」= 用户输入卡密后获得多少次刷课额度；「每张可用次数」= 同一张卡能被兑换几次。
+          一张授权码 = 几次刷课。跑一次刷课程序扣 1 次（一次里刷几门课都算 1 次）；运行失败会自动退还。
         </div>
       </div>
       <div class="panel">
         <div class="row" style="justify-content:space-between">
-          <h3 style="margin:0">卡密列表</h3>
+          <h3 style="margin:0">授权码列表</h3>
           <div class="row">
-            <input id="codeSearch" placeholder="搜索卡密/名称" style="width:180px">
+            <input id="codeSearch" placeholder="搜索授权码/名称" style="width:180px">
             <button class="btn btn-ghost btn-sm" onclick="loadCodes()">搜索</button>
             <button class="btn btn-ghost btn-sm" onclick="loadCodes(true)">刷新</button>
           </div>
@@ -180,6 +175,9 @@
     <section id="tab-usage" class="hidden">
       <h2>用量与费用</h2>
       <div class="cards" id="usageCards"></div>
+      <div class="panel">
+        <h3>按授权码</h3><div id="usageCode" class="empty">加载中…</div>
+      </div>
       <div class="panel">
         <h3>按账号</h3><div id="usageAccount" class="empty">加载中…</div>
       </div>
@@ -323,7 +321,7 @@ async function loadDashboard() {
     const codes = auth.codes || {};
     document.getElementById('overviewCards').innerHTML = [
       card('用户', num(users.total), '启用 ' + num(users.enabled) + ' · 管理员 ' + num(users.admins)),
-      card('卡密', num(codes.total), '已核销 ' + num(codes.used) + ' 次'),
+      card('授权码', num(codes.total), '已核销 ' + num(codes.used) + ' 次'),
       card('任务', num(tasks.total), '运行 ' + num(tasks.running) + ' · 成功 ' + num(tasks.finished) + ' · 失败 ' + num(tasks.failed)),
       card('累计 AI 费用', money((usage.all || {}).cost), num((usage.all || {}).total_tokens) + ' tokens'),
       card('今日 AI 费用', money((usage.today || {}).cost), num((usage.today || {}).calls) + ' 次调用'),
@@ -459,26 +457,19 @@ async function deleteUser(username) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
-/* ───────────── 卡密 ───────────── */
-function onCodeTypeChange() {
-  const type = document.getElementById('nc-type').value;
-  document.getElementById('nc-maxuses-wrap').classList.toggle('hidden', type !== 'limited');
-}
-
+/* ───────────── 授权码 ───────────── */
 async function createCodes() {
   const payload = {
-    type: document.getElementById('nc-type').value,
     count: parseInt(document.getElementById('nc-count').value || '1', 10),
-    credits: parseInt(document.getElementById('nc-credits').value || '1', 10),
-    max_uses: parseInt(document.getElementById('nc-maxuses').value || '1', 10),
+    uses: parseInt(document.getElementById('nc-uses').value || '1', 10),
     name: document.getElementById('nc-name').value.trim(),
-    expires_at: document.getElementById('nc-expires').value.trim(),
-    bound_user: document.getElementById('nc-bound').value.trim()
+    note: document.getElementById('nc-note').value.trim(),
+    expires_at: document.getElementById('nc-expires').value.trim()
   };
   try {
     const data = await api('/api/codes', { method: 'POST', body: JSON.stringify(payload) });
     const codes = data.codes || [];
-    openModal('已生成 ' + codes.length + ' 张卡密',
+    openModal('已生成 ' + codes.length + ' 张授权码',
       '<div class="hint">点击下方文本框可全选复制。</div>' +
       '<textarea readonly style="width:100%;height:160px;margin-top:10px;font-family:ui-monospace,monospace">' +
       esc(codes.join('\n')) + '</textarea>',
@@ -500,29 +491,41 @@ async function loadCodes(silent) {
     const data = await api('/api/codes' + (keyword ? '?q=' + encodeURIComponent(keyword) : ''));
     const codes = data.codes || [];
     const box = document.getElementById('codesTable');
-    if (!codes.length) { box.innerHTML = '<div class="empty">暂无卡密</div>'; return; }
-    box.innerHTML = '<table><thead><tr><th>卡密</th><th>类型</th><th>名称</th><th>兑换额度</th>' +
-      '<th>已用/上限</th><th>绑定</th><th>到期</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
+    if (!codes.length) { box.innerHTML = '<div class="empty">暂无授权码</div>'; return; }
+    box.innerHTML = '<table><thead><tr><th>授权码</th><th>名称</th><th>已用/总次数</th><th>剩余</th>' +
+      '<th>AI 花费</th><th>到期</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
       codes.map(function (c) {
+        const usage = c.usage || {};
         return '<tr>' +
           '<td class="mono"><b>' + esc(c.code) + '</b></td>' +
-          '<td>' + esc(c.type_label) + '</td>' +
-          '<td>' + esc(c.name || '-') + '</td>' +
-          '<td>' + num(c.credits) + ' 次</td>' +
-          '<td>' + num(c.used_count) + ' / ' + (c.type === 'unlimited' ? '∞' : num(c.max_uses)) + '</td>' +
-          '<td>' + esc(c.bound_user || '-') + '</td>' +
+          '<td>' + esc(c.name || '-') + '<div class="hint">' + esc(c.note || '') + '</div></td>' +
+          '<td>' + num(c.used) + ' / ' + (c.unlimited ? '∞' : num(c.uses)) + '</td>' +
+          '<td>' + esc(c.remaining_label) + '</td>' +
+          '<td>' + num(usage.total_tokens) + ' tokens<div class="hint">' + money(usage.cost) + '</div></td>' +
           '<td class="hint">' + esc(c.expires_at || '长期') + '</td>' +
           '<td>' + (c.enabled ? '<span class="pill ok">启用</span>' : '<span class="pill bad">禁用</span>') +
             (c.expired ? ' <span class="pill warn">已过期</span>' : '') + '</td>' +
           '<td><div class="actions">' +
             '<button class="btn btn-ghost btn-sm" onclick="copyText(\'' + esc(c.code) + '\')">复制</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="setCodeUses(\'' + esc(c.code) + '\',' + c.uses + ')">改次数</button>' +
             '<button class="btn btn-ghost btn-sm" onclick="toggleCode(\'' + esc(c.code) + '\',' + (!c.enabled) + ')">' +
               (c.enabled ? '禁用' : '启用') + '</button>' +
-            '<button class="btn btn-ghost btn-sm" onclick="resetCode(\'' + esc(c.code) + '\')">重置</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="resetCode(\'' + esc(c.code) + '\')">重置已用</button>' +
             '<button class="btn btn-danger btn-sm" onclick="deleteCode(\'' + esc(c.code) + '\')">删除</button>' +
           '</div></td></tr>';
       }).join('') + '</tbody></table>';
   } catch (err) { if (!silent) toast(err.message, 'error'); }
+}
+
+async function setCodeUses(code, current) {
+  const value = prompt('把授权码 ' + code + ' 的总次数改为（-1 表示不限）：', current);
+  if (value === null) return;
+  try {
+    await api('/api/codes/' + encodeURIComponent(code) + '/uses',
+      { method: 'POST', body: JSON.stringify({ uses: parseInt(value, 10) }) });
+    toast('已更新', 'ok');
+    loadCodes(true);
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 async function toggleCode(code, enabled) {
@@ -534,7 +537,7 @@ async function toggleCode(code, enabled) {
 }
 
 async function resetCode(code) {
-  if (!confirm('把卡密 ' + code + ' 的已用次数清零？')) return;
+  if (!confirm('把授权码 ' + code + ' 的已用次数清零？')) return;
   try {
     await api('/api/codes/' + encodeURIComponent(code) + '/reset', { method: 'POST' });
     toast('已重置', 'ok');
@@ -543,7 +546,7 @@ async function resetCode(code) {
 }
 
 async function deleteCode(code) {
-  if (!confirm('确定删除卡密 ' + code + ' 吗？')) return;
+  if (!confirm('确定删除授权码 ' + code + ' 吗？')) return;
   try {
     await api('/api/codes/' + encodeURIComponent(code), { method: 'DELETE' });
     toast('已删除', 'ok');
@@ -555,13 +558,14 @@ async function deleteCode(code) {
 const TASK_LABEL = { selecting: '选择课程中', running: '运行中', finished: '已完成', failed: '失败', stopped: '已停止' };
 
 function taskTable(tasks, withActions) {
-  return '<table><thead><tr><th>任务</th><th>用户</th><th>学习通账号</th><th>状态</th><th>章节</th>' +
+  return '<table><thead><tr><th>任务</th><th>授权码</th><th>用户</th><th>学习通账号</th><th>状态</th><th>章节</th>' +
     '<th>AI 消耗</th><th>创建时间</th>' + (withActions ? '<th>操作</th>' : '') + '</tr></thead><tbody>' +
     tasks.map(function (t) {
       const usage = t.usage || {};
       const summary = t.summary || {};
       return '<tr>' +
         '<td class="mono">' + esc(t.id) + '</td>' +
+        '<td class="mono">' + esc(t.code || '-') + '</td>' +
         '<td>' + esc(t.owner || '-') + '</td>' +
         '<td>' + esc(t.display_name || t.username) + '</td>' +
         '<td><span class="pill ' + (t.status === 'finished' ? 'ok' : t.status === 'failed' ? 'bad' : 'muted') + '">' +
@@ -619,15 +623,17 @@ async function loadUsage() {
       card('累计费用', money(totals.cost), '近 30 天 ' + money(range.cost)),
     ].join('');
     const groups = data.groups || {};
+    document.getElementById('usageCode').innerHTML = groupTable(groups.code || [], '授权码');
     document.getElementById('usageAccount').innerHTML = groupTable(groups.account || [], '账号');
     document.getElementById('usageUser').innerHTML = groupTable(groups.user || [], '用户');
     document.getElementById('usageDay').innerHTML = groupTable(groups.day || [], '日期');
     const rows = data.recent || [];
     document.getElementById('usageRecent').innerHTML = rows.length
-      ? '<table><thead><tr><th>时间(UTC)</th><th>用户</th><th>账号</th><th>模型</th><th>输入</th>' +
+      ? '<table><thead><tr><th>时间(UTC)</th><th>授权码</th><th>用户</th><th>账号</th><th>模型</th><th>输入</th>' +
         '<th>命中</th><th>输出</th><th>合计</th><th>费用</th></tr></thead><tbody>' +
         rows.map(function (r) {
           return '<tr><td class="hint">' + esc(String(r.at || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+            '<td class="mono">' + esc(r.code || '-') + '</td>' +
             '<td>' + esc(r.user || '-') + '</td><td class="mono">' + esc(r.account || '-') + '</td>' +
             '<td>' + esc(r.model || '') + '</td>' +
             '<td>' + num(r.prompt_tokens) + '</td><td>' + num(r.cache_hit_tokens) + '</td>' +

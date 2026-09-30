@@ -55,10 +55,11 @@ def test_index_renders(web_app):
     assert "批量并行" in body
 
 
-def test_api_requires_token(web_app):
+def test_api_is_open_in_this_fixture(web_app):
+    """本 fixture 关掉了鉴权（auth_enabled=false），接口应直接可用。"""
     response = web_app.test_client().get("/api/tasks")
-    assert response.status_code == 401
-    assert response.get_json()["need_token"] is True
+    assert response.status_code == 200
+    assert "tasks" in response.get_json()
 
 
 def test_start_task_and_stream(web_app):

@@ -54,6 +54,7 @@ USAGE_SCHEMA = (
     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " at TEXT NOT NULL,"
     " user TEXT DEFAULT '',"
+    " code TEXT DEFAULT '',"
     " account TEXT DEFAULT '',"
     " task_id TEXT DEFAULT '',"
     " run_id TEXT DEFAULT '',"
@@ -71,6 +72,7 @@ USAGE_SCHEMA = (
     "CREATE INDEX IF NOT EXISTS idx_usage_account ON ai_usage (account, at DESC);"
     "CREATE INDEX IF NOT EXISTS idx_usage_user ON ai_usage (user, at DESC);"
     "CREATE INDEX IF NOT EXISTS idx_usage_task ON ai_usage (task_id);"
+    "CREATE INDEX IF NOT EXISTS idx_usage_code ON ai_usage (code);"
     "CREATE INDEX IF NOT EXISTS idx_usage_at ON ai_usage (at DESC);"
 )
 
@@ -183,6 +185,7 @@ class UsageContext:
     """一次运行的归属信息（写进每条用量记录，便于聚合）。"""
 
     user: str = ""
+    code: str = ""
     account: str = ""
     task_id: str = ""
     run_id: str = ""
@@ -194,6 +197,14 @@ class UsageRecorder:
     def __init__(self, db_path: str | Path):
         self.store = Store(db_path)
         self.store.executescript(USAGE_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """老库补列：授权码字段是后加的。"""
+        columns = {str(row.get("name")) for row in self.store.query("PRAGMA table_info(ai_usage)")}
+        if "code" not in columns:
+            self.store.execute("ALTER TABLE ai_usage ADD COLUMN code TEXT DEFAULT ''")
+            self.store.execute("CREATE INDEX IF NOT EXISTS idx_usage_code ON ai_usage (code)")
 
     def record(
         self,
@@ -219,6 +230,7 @@ class UsageRecorder:
         row = {
             "at": at.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
             "user": context.user,
+            "code": context.code,
             "account": context.account,
             "task_id": context.task_id,
             "run_id": context.run_id,
@@ -238,10 +250,10 @@ class UsageRecorder:
         self.store.execute(
             """
             INSERT INTO ai_usage
-                (at, user, account, task_id, run_id, provider, model,
+                (at, user, code, account, task_id, run_id, provider, model,
                  prompt_tokens, cache_hit_tokens, cache_miss_tokens,
                  output_tokens, total_tokens, cost, currency, detail)
-            VALUES (:at, :user, :account, :task_id, :run_id, :provider, :model,
+            VALUES (:at, :user, :code, :account, :task_id, :run_id, :provider, :model,
                     :prompt_tokens, :cache_hit_tokens, :cache_miss_tokens,
                     :output_tokens, :total_tokens, :cost, :currency, :detail)
             """,
@@ -268,7 +280,7 @@ class UsageRecorder:
     def group_by(
         self, field: str, *, since: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
-        if field not in {"account", "user", "task_id", "model", "day"}:
+        if field not in {"account", "user", "code", "task_id", "model", "day"}:
             raise ValueError(f"不支持的聚合维度: {field}")
         expr = "substr(at, 1, 10)" if field == "day" else field
         where, params = _filter_sql(since=since)
@@ -306,6 +318,16 @@ class UsageRecorder:
             " COALESCE(SUM(cost), 0) AS cost"
             " FROM ai_usage WHERE account = ?",
             (account,),
+        )
+        return rows[0] if rows else {"calls": 0, "total_tokens": 0, "cost": 0.0}
+
+    def for_code(self, code: str) -> dict[str, Any]:
+        rows = self.store.query(
+            "SELECT COUNT(*) AS calls,"
+            " COALESCE(SUM(total_tokens), 0) AS total_tokens,"
+            " COALESCE(SUM(cost), 0) AS cost"
+            " FROM ai_usage WHERE code = ?",
+            ((code or "").strip().upper(),),
         )
         return rows[0] if rows else {"calls": 0, "total_tokens": 0, "cost": 0.0}
 

@@ -6,9 +6,6 @@ import pytest
 from server.auth import (
     AuthError,
     AuthManager,
-    CODE_LIMITED,
-    CODE_SINGLE,
-    CODE_UNLIMITED,
     UNLIMITED_CREDITS,
     hash_password,
     verify_password,
@@ -77,13 +74,13 @@ def test_quota_consume_and_refund(auth):
     auth.create_user("u1", "pass123456", credits=2)
     assert auth.quota_status("u1")["ok"] is True
 
-    auth.consume("u1", "task-1")
-    auth.consume("u1", "task-2")
+    auth.consume(task_id="task-1", user="u1")
+    auth.consume(task_id="task-2", user="u1")
     assert auth.get_user("u1")["credits"] == 0
     assert auth.used_today("u1") == 2
 
     with pytest.raises(AuthError, match="次数已用完"):
-        auth.consume("u1", "task-3")
+        auth.consume(task_id="task-3", user="u1")
 
     assert auth.refund("task-2") is True
     assert auth.get_user("u1")["credits"] == 1
@@ -93,7 +90,7 @@ def test_quota_consume_and_refund(auth):
 
 def test_daily_limit(auth):
     auth.create_user("u1", "pass123456", credits=10, daily_task_limit=1)
-    auth.consume("u1", "t1")
+    auth.consume(task_id="t1", user="u1")
     status = auth.quota_status("u1")
     assert status["ok"] is False
     assert "今日任务数已达上限" in status["reason"]
@@ -102,66 +99,117 @@ def test_daily_limit(auth):
 def test_unlimited_credits_admin(auth):
     user = auth.create_user("boss", "pass123456", role="admin", credits=UNLIMITED_CREDITS)
     assert user["unlimited"] is True
-    auth.consume("boss", "t1")
-    auth.consume("boss", "t2")
+    auth.consume(task_id="t1", user="boss")
+    auth.consume(task_id="t2", user="boss")
     assert auth.get_user("boss")["credits"] == UNLIMITED_CREDITS
 
 
 def test_codes_lifecycle(auth):
-    auth.create_user("u1", "pass123456", credits=0)
-    codes = auth.create_codes(code_type=CODE_LIMITED, count=2, credits=3,
-                              name="测试", max_uses=1)
+    """一张授权码 = 几次刷课；跑一次扣 1 次。"""
+    codes = auth.create_codes(count=2, uses=3, name="测试班")
     assert len(codes) == 2
 
     ok, message, info = auth.verify_code(codes[0])
-    assert ok and info["credits"] == 3
+    assert ok and info["uses"] == 3 and info["remaining"] == 3
+    assert info["remaining_label"] == "剩余 3 次"
 
-    result = auth.redeem_code(codes[0], "u1")
-    assert result["credits"] == 3
-    assert auth.get_user("u1")["credits"] == 3
+    result = auth.consume(task_id="t1", code=codes[0])
+    assert result["source"] == "code"
+    assert result["remaining"] == 2
+    assert auth.get_code(codes[0])["used"] == 1
 
+    # 用尽后拒绝
+    auth.consume(task_id="t2", code=codes[0])
+    auth.consume(task_id="t3", code=codes[0])
     ok, message, _ = auth.verify_code(codes[0])
     assert not ok and "用尽" in message
 
+    # 重置已用次数 / 改总次数 / 禁用 / 删除
     auth.reset_code(codes[0])
     assert auth.verify_code(codes[0])[0] is True
-
+    auth.set_code_uses(codes[0], 10)
+    assert auth.get_code(codes[0])["remaining"] == 10
     auth.toggle_code(codes[0], False)
     ok, message, _ = auth.verify_code(codes[0])
     assert not ok and "禁用" in message
-
     auth.delete_code(codes[0])
     assert auth.verify_code(codes[0])[0] is False
 
 
-def test_single_and_unlimited_codes(auth):
-    single = auth.create_codes(code_type=CODE_SINGLE, count=1, credits=1)[0]
-    unlimited = auth.create_codes(code_type=CODE_UNLIMITED, count=1, credits=1)[0]
-    auth.create_user("u1", "pass123456")
+def test_code_priority_over_user_credits(auth):
+    """授权码与用户额度同时存在时优先扣授权码。"""
+    auth.create_user("u1", "pass123456", credits=5)
+    code = auth.create_codes(count=1, uses=2)[0]
 
-    info = auth.verify_code(single)[2]
-    assert info["max_uses"] == 1 and info["type"] == "single"
-    auth.redeem_code(single, "u1")
-    assert auth.verify_code(single)[0] is False
-
-    assert auth.verify_code(unlimited)[2]["remaining"] is None
-    auth.redeem_code(unlimited, "u1")
-    assert auth.verify_code(unlimited)[0] is True    # 无限卡可以继续用
+    result = auth.consume(task_id="t1", code=code, user="u1")
+    assert result["source"] == "code"
+    assert result["remaining"] == 1
+    assert auth.get_user("u1")["credits"] == 5      # 用户额度没动
+    assert auth.get_code(code)["used"] == 1
 
 
-def test_code_binding_and_expiry(auth):
-    auth.create_user("u1", "pass123456")
-    auth.create_user("u2", "pass123456")
-    code = auth.create_codes(code_type=CODE_SINGLE, count=1, credits=1, bound_user="u1")[0]
+def test_code_without_login(auth):
+    """不登录也能用授权码跑。"""
+    code = auth.create_codes(count=1, uses=1)[0]
+    result = auth.consume(task_id="t1", code=code)
+    assert result["source"] == "code"
+    assert result["remaining"] == 0
 
-    with pytest.raises(AuthError, match="绑定"):
-        auth.redeem_code(code, "u2")
-    assert auth.redeem_code(code, "u1")["credits"] == 1
 
-    expired = auth.create_codes(code_type=CODE_SINGLE, count=1, credits=1,
-                                expires_at="2020-01-01")[0]
+def test_need_code_or_login(auth):
+    with pytest.raises(AuthError, match="授权码"):
+        auth.consume(task_id="t1")
+
+
+def test_invalid_code_is_rejected(auth):
+    auth.create_user("u1", "pass123456", credits=5)
+    with pytest.raises(AuthError, match="不存在"):
+        auth.consume(task_id="t1", code="NOTEXIST99", user="u1")
+
+
+def test_unlimited_code(auth):
+    code = auth.create_codes(count=1, uses=-1)[0]
+    assert auth.get_code(code)["unlimited"] is True
+    for index in range(3):
+        auth.consume(task_id=f"t{index}", code=code)
+    assert auth.get_code(code)["remaining"] is None
+    assert auth.verify_code(code)[0] is True
+
+
+def test_failure_refunds_code_and_user(auth):
+    """运行失败不扣次数：授权码退回授权码，用户额度退回用户。"""
+    auth.create_user("u1", "pass123456", credits=1)
+    code = auth.create_codes(count=1, uses=1)[0]
+
+    auth.consume(task_id="t-code", code=code)
+    assert auth.get_code(code)["remaining"] == 0
+    assert auth.refund("t-code") is True
+    assert auth.get_code(code)["remaining"] == 1
+
+    auth.consume(task_id="t-user", user="u1")
+    assert auth.get_user("u1")["credits"] == 0
+    assert auth.refund("t-user") is True
+    assert auth.get_user("u1")["credits"] == 1
+
+    assert auth.refund("t-user") is False     # 不能重复退
+
+
+def test_code_expiry(auth):
+    expired = auth.create_codes(count=1, uses=1, expires_at="2020-01-01")[0]
     ok, message, info = auth.verify_code(expired)
     assert not ok and info["expired"] is True
+
+    future = auth.create_codes(count=1, uses=1, expires_at="2099-01-01")[0]
+    assert auth.verify_code(future)[0] is True
+
+
+def test_code_usage_log(auth):
+    code = auth.create_codes(count=1, uses=5)[0]
+    auth.consume(task_id="t1", code=code, user="u1")
+    usages = auth.code_usages(code)
+    assert len(usages) == 1
+    assert usages[0]["task_id"] == "t1"
+    assert usages[0]["kind"] == "code"
 
 
 def test_api_keys(auth):
@@ -186,9 +234,55 @@ def test_audit_log(auth):
 def test_stats(auth):
     auth.ensure_bootstrap_admin("admin", "pass123456")
     auth.create_user("u1", "pass123456", credits=3)
-    auth.create_codes(code_type=CODE_SINGLE, count=2, credits=1)
-    auth.consume("u1", "t1")
+    auth.create_codes(count=2, uses=1)
+    auth.consume(task_id="t1", user="u1")
     stats = auth.stats()
     assert stats["users"]["total"] == 2
     assert stats["codes"]["total"] == 2
     assert stats["credits"]["used"] == 1
+
+
+def test_migrates_legacy_code_table(tmp_path):
+    """老版本数据库（type/max_uses/credits/used_count）要能平滑迁移到新结构。"""
+    import sqlite3
+
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE auth_codes ("
+        " code TEXT PRIMARY KEY, type TEXT, name TEXT, note TEXT,"
+        " max_uses INTEGER, used_count INTEGER, credits INTEGER, bound_user TEXT,"
+        " enabled INTEGER, created_at TEXT, updated_at TEXT, expires_at TEXT,"
+        " last_used_at TEXT);"
+        "CREATE TABLE credit_usages ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, user TEXT, task_id TEXT,"
+        " cost INTEGER, kind TEXT, refunded INTEGER, detail TEXT);"
+    )
+    conn.execute(
+        "INSERT INTO auth_codes (code, type, name, max_uses, used_count, credits, enabled,"
+        " created_at) VALUES ('OLDCODE123', 'limited', '老卡密', 5, 2, 3, 1, '2026-01-01 00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO auth_codes (code, type, name, max_uses, used_count, credits, enabled,"
+        " created_at) VALUES ('OLDUNLIMIT', 'unlimited', '老无限卡', 0, 7, 1, 1, '2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    manager = AuthManager(db)
+    try:
+        info = manager.get_code("OLDCODE123")
+        assert info is not None
+        assert info["uses"] == 5          # max_uses → uses
+        assert info["used"] == 2          # used_count → used
+        assert info["remaining"] == 3
+        assert info["name"] == "老卡密"
+
+        unlimited = manager.get_code("OLDUNLIMIT")
+        assert unlimited["unlimited"] is True
+        assert unlimited["remaining"] is None
+        # 迁移后仍可正常扣次
+        manager.consume(task_id="t-old", code="OLDCODE123")
+        assert manager.get_code("OLDCODE123")["remaining"] == 2
+    finally:
+        manager.close()

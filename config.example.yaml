@@ -23,18 +23,19 @@ server:
   web_enabled: true
   web_host: 127.0.0.1
   web_port: 8765
-  # 访问令牌：部署脚本会自动生成随机令牌并打印带 token 的地址
-  # 非空时访问需带 ?token=xxx，或用 X-Token / Authorization: Bearer 头
+  # 兼容字段：已不再使用访问令牌（鉴权改用授权码 / 登录），留空即可
   web_token: ""
   # 网页端同时运行的任务数上限（多账号并行）
   web_max_parallel_tasks: 8
 
   # ── 服务鉴权与额度 ──────────────────────────────────────────────
-  # 开启后必须登录才能使用控制台；用户由管理员在后台创建
+  # 开启后：开始刷课必须"填授权码"或"登录且有账号额度"；进页面不需要登录
+  # 一次刷课 = 扣 1 次额度（一次里刷几门课都算 1 次），失败自动退还
   auth_enabled: true
   # 管理后台入口（建议改成别人猜不到的路径，例如 /cx-admin-9f2）
   admin_path: /admin
-  # 初始管理员账号；密码留空则首次启动时随机生成
+  # 初始管理员账号（后台入口见上面的 admin_path，前台不暴露）
+  # 密码留空则首次启动时随机生成
   # （会写入 data/initial_admin_password.txt，并在日志/部署输出里打印一次）
   admin_user: admin
   admin_password: ""

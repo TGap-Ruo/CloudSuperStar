@@ -69,6 +69,7 @@ _TASK_FIELDS = {
     "report_file",
     "courses",
     "owner",
+    "code",
 }
 
 CommandBuilder = Callable[["TaskRecord"], tuple[list[str], Path, dict[str, str]]]
@@ -101,6 +102,7 @@ class TaskRecord:
     report_file: str = ""
     courses: list[dict[str, Any]] = field(default_factory=list)
     owner: str = ""          # 提交该任务的用户（用于用量/额度归属）
+    code: str = ""           # 本次使用的授权码（为空表示用的是用户额度）
 
     def to_dict(self) -> dict[str, Any]:
         """对外输出（不含任何密码信息）。"""
@@ -119,6 +121,7 @@ class TaskRecord:
             "has_log": bool(self.log_file and Path(self.log_file).is_file()),
             "courses": list(self.courses),
             "owner": self.owner,
+            "code": self.code,
         }
 
 
@@ -253,6 +256,7 @@ class TaskManager:
         password: str,
         *,
         owner: str = "",
+        code: str = "",
         display_name: str = "",
         course_ids: Optional[list[str]] = None,
         speed: Optional[float] = None,
@@ -268,6 +272,7 @@ class TaskManager:
             username,
             password,
             owner=owner,
+            code=code,
             display_name=display_name,
             course_ids=course_ids,
             speed=speed,
@@ -293,6 +298,7 @@ class TaskManager:
         password: str,
         *,
         owner: str = "",
+        code: str = "",
         display_name: str = "",
         speed: Optional[float] = None,
         jobs: Optional[int] = None,
@@ -307,6 +313,7 @@ class TaskManager:
             username,
             password,
             owner=owner,
+            code=code,
             display_name=display_name,
             course_ids=None,
             speed=speed,
@@ -362,6 +369,7 @@ class TaskManager:
         password: str,
         *,
         owner: str = "",
+        code: str = "",
         display_name: str = "",
         course_ids: Optional[list[str]] = None,
         speed: Optional[float] = None,
@@ -394,6 +402,7 @@ class TaskManager:
                 account=account,
                 username=username,
                 owner=owner,
+                code=(code or "").strip().upper(),
                 display_name=(display_name or username).strip() or username,
                 status=SELECTING_STATUS,
                 options={
@@ -540,6 +549,7 @@ class TaskManager:
         if record is not None:
             env["CX_TASK_ID"] = record.id
             env["CX_USER"] = record.owner
+            env["CX_CODE"] = record.code
         return env
 
     def _default_courses_provider(

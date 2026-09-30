@@ -30,8 +30,6 @@
 #    --base-url URL        API 地址，默认 https://api.deepseek.com/v1
 #    --port N              Web 控制台端口，默认 8765
 #    --timezone TZ         定时任务时区，默认取服务器 /etc/timezone（国内建议 Asia/Shanghai）
-#    --token TOKEN         访问令牌；默认自动随机生成
-#    --no-token            不启用访问令牌（任何人可访问，风险自负）
 #    --max-parallel N      同时运行的任务数上限，默认 8
 #    --admin-path PATH     管理后台入口，默认 /admin
 #    --admin-password PW   初始管理员密码，默认随机生成并打印
@@ -51,7 +49,6 @@ APP_DIR="/opt/chaoxing"
 ETC_DIR="/etc/chaoxing"
 DATA_DIR="/var/lib/chaoxing"
 WEB_PORT="8765"
-WEB_TOKEN=""
 WEB_HOST="0.0.0.0"
 TIMEZONE=""
 MAX_PARALLEL="8"
@@ -97,8 +94,6 @@ usage() {
   --base-url URL       API 地址，默认 https://api.deepseek.com/v1
   --port N             控制台端口，默认 8765
   --timezone TZ        定时任务时区（国内建议 Asia/Shanghai）
-  --token TOKEN        访问令牌，默认随机生成
-  --no-token           关闭访问令牌（风险自负）
   --max-parallel N     同时运行任务数上限，默认 8
   --admin-path PATH    管理后台入口，默认 /admin（建议改成别人猜不到的路径）
   --admin-password PW  初始管理员密码，留空则随机生成并在结束时打印
@@ -363,8 +358,6 @@ while [[ $# -gt 0 ]]; do
     --port)           WEB_PORT="${2:-}"; shift 2 ;;
     --timezone)       TIMEZONE="${2:-}"; shift 2 ;;
     --host)           WEB_HOST="${2:-}"; shift 2 ;;
-    --token)          WEB_TOKEN="${2:-}"; shift 2 ;;
-    --no-token)       WEB_TOKEN="__NO_TOKEN__"; shift ;;
     --max-parallel)   MAX_PARALLEL="${2:-}"; shift 2 ;;
     --admin-path)     ADMIN_PATH="${2:-/admin}"; shift 2 ;;
     --admin-user)     ADMIN_USER="${2:-admin}"; shift 2 ;;
@@ -596,14 +589,6 @@ case "${TIMEZONE}" in
   *) info "定时任务时区: ${TIMEZONE}" ;;
 esac
 
-if [[ -z "${WEB_TOKEN}" ]]; then
-  WEB_TOKEN="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  info "已自动生成访问令牌"
-elif [[ "${WEB_TOKEN}" == "__NO_TOKEN__" ]]; then
-  WEB_TOKEN=""
-  warn "你选择了 --no-token：控制台无需令牌即可访问，请务必用防火墙/安全组限制来源 IP"
-fi
-
 "${APP_DIR}/.venv/bin/python" "${APP_DIR}/deploy/write_config.py" \
   --config "${ETC_DIR}/config.yaml" \
   --template "${APP_DIR}/config.example.yaml" \
@@ -613,7 +598,7 @@ fi
   --data-dir "${DATA_DIR}" \
   --web-host "${WEB_HOST}" \
   --web-port "${WEB_PORT}" \
-  --web-token "${WEB_TOKEN}" \
+  --web-token "" \
   --web-max-parallel "${MAX_PARALLEL}" \
   --timezone "${TIMEZONE}" \
   --admin-path "${ADMIN_PATH}" \
@@ -694,18 +679,15 @@ if [[ -f "${DATA_DIR}/initial_admin_password.txt" ]]; then
   INITIAL_ADMIN_PASSWORD="$(grep -m1 '^密码：' "${DATA_DIR}/initial_admin_password.txt" 2>/dev/null | sed 's/^密码：//' || true)"
 fi
 
-TOKEN_SUFFIX=""
-[[ -n "${WEB_TOKEN}" ]] && TOKEN_SUFFIX="?token=${WEB_TOKEN}"
 
 cat <<EOF
 
 ${GREEN}${BOLD}部署完成 ✅${NC}
 
-  ${BOLD}控制台地址${NC}：http://${PUBLIC_IP}:${WEB_PORT}/${TOKEN_SUFFIX}
+  ${BOLD}控制台地址${NC}：http://${PUBLIC_IP}:${WEB_PORT}/
   ${BOLD}管理后台${NC}：http://${PUBLIC_IP}:${WEB_PORT}${ADMIN_PATH}/
   ${BOLD}管理员账号${NC}：${ADMIN_USER}
   ${BOLD}管理员密码${NC}：${ADMIN_PASSWORD:-${INITIAL_ADMIN_PASSWORD:-（首次启动随机生成，见 ${DATA_DIR}/initial_admin_password.txt）}}
-  ${BOLD}访问令牌${NC}：${WEB_TOKEN:-（未启用）}
   ${BOLD}DeepSeek${NC}：${MODEL} @ ${BASE_URL}
   ${BOLD}计费${NC}：按 DeepSeek 官方定价估算，后台「用量与费用」可看每个账号的 token 与花费
   ${BOLD}配置文件${NC}：${ETC_DIR}/config.yaml
@@ -715,9 +697,11 @@ ${GREEN}${BOLD}部署完成 ✅${NC}
   ${BOLD}浏览器打不开控制台？${NC}
   国内直连国外服务器的非标准端口（如 ${WEB_PORT}）常被运营商拦截，此时用 SSH 隧道最稳：
     ssh -L ${WEB_PORT}:127.0.0.1:${WEB_PORT} root@${PUBLIC_IP}
-    然后在本地浏览器打开：http://127.0.0.1:${WEB_PORT}/${TOKEN_SUFFIX}
+    然后在本地浏览器打开：http://127.0.0.1:${WEB_PORT}/
 
-  打开控制台后，直接填写学习通「账号 + 密码」即可开始刷课：
+  打开控制台后（默认不需要登录），填写学习通「账号 + 密码」，再填上管理员发的授权码即可开始：
+    · 先到管理后台生成授权码：${ADMIN_PATH}/ → 授权码管理 → 生成
+    · 一张授权码 = 几次刷课；跑一次扣 1 次，失败（如密码错误）自动退还
     · 支持「批量并行」：每行一个账号（账号,密码）
     · 右侧实时显示日志，可停止 / 删除任务 / 下载日志
     · 答题使用你刚才填写的 DeepSeek Key，无需再配置
@@ -731,6 +715,6 @@ ${GREEN}${BOLD}部署完成 ✅${NC}
   如需定时自动刷课，编辑 ${ETC_DIR}/config.yaml 的 accounts 段
   （cron 示例：schedule: "0 8 * * *"），再 systemctl restart chaoxing-serve。
 
-  ${YELLOW}提醒：刷课可能违反平台条款与校规，请自行评估风险；请勿把访问令牌分享给他人。${NC}
+  ${YELLOW}提醒：刷课可能违反平台条款与校规，请自行评估风险；管理后台入口与授权码请勿随意分享。${NC}
 
 EOF

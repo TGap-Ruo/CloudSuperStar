@@ -272,7 +272,7 @@ def create_app(
 
     # ------------------------------------------------------------------ 鉴权
     def current_user() -> dict[str, Any] | None:
-        """识别当前身份：会话 → API Key → 兼容旧的 web_token（视为管理员）。"""
+        """识别当前身份：登录会话 → API Key。不登录也能用（靠授权码）。"""
         username = session.get("username")
         if username:
             user = auth.get_user(str(username))
@@ -285,72 +285,100 @@ def create_app(
             user = auth.verify_api_key(api_key)
             if user and user.get("enabled"):
                 return user
-
-        expected = config.server.web_token
-        if expected and _token_from_request() == expected:
-            admin = auth.get_user(config.server.admin_user)
-            if admin and admin.get("enabled"):
-                return admin
-            return {
-                "username": "token-admin",
-                "role": "admin",
-                "enabled": True,
-                "credits": -1,
-                "credits_label": "不限",
-                "unlimited": True,
-            }
         return None
 
     def require_user(role: str | None = None):
-        """接口鉴权：返回 None 表示通过，否则返回可直接返回给前端的错误响应。"""
+        """需要"已登录"的接口使用；不登录即可用的接口不要调用它。"""
         user = current_user()
         if user is None:
-            # 配了访问令牌就按令牌校验（兼容旧部署），否则按是否开启登录鉴权决定
-            if config.server.web_token:
-                return jsonify({"error": "访问令牌无效或缺失", "need_token": True}), 401
-            if config.server.auth_enabled:
-                return jsonify({"error": "未登录或登录已过期", "need_login": True}), 401
-            return None
+            return jsonify({"error": "未登录或登录已过期", "need_login": True}), 401
         if role == "admin" and user.get("role") != "admin":
             return jsonify({"error": "需要管理员权限"}), 403
         return None
 
-    def quota_guard(user: dict[str, Any] | None, needed: int = 1):
-        if not config.server.auth_enabled or not user:
-            return None
-        status = auth.quota_status(str(user.get("username", "")))
-        if not status.get("ok"):
-            return jsonify({"error": status.get("reason", "额度不足"), "quota": status}), 402
-        return None
+    def resolve_quota(code: str = "", user: dict[str, Any] | None = None) -> dict[str, Any]:
+        """解析本次可用额度：**授权码优先**，其次登录用户的账号额度。
 
-    def consume_credit(user: dict[str, Any] | None, task_id: str) -> str | None:
-        """扣减额度；成功返回 None，失败返回错误信息。"""
-        if not config.server.auth_enabled or not user:
+        返回 {"ok": bool, "source": "code"|"user", "label": ..., "remaining": ...,
+              "reason": 错误原因}
+        """
+        code = (code or "").strip().upper()
+        if code:
+            ok, message, info = auth.verify_code(code)
+            if not ok or not info:
+                return {"ok": False, "source": "code", "reason": message}
+            return {
+                "ok": True,
+                "source": "code",
+                "code": info["code"],
+                "remaining": info["remaining"],
+                "remaining_label": info["remaining_label"],
+                "label": f"授权码 {info['code']}（{info['remaining_label']}）",
+                "name": info.get("name", ""),
+            }
+        if user:
+            status = auth.quota_status(str(user.get("username", "")))
+            if not status.get("ok"):
+                return {"ok": False, "source": "user", "reason": status.get("reason", "额度不足")}
+            return {
+                "ok": True,
+                "source": "user",
+                "user": user.get("username"),
+                "remaining": status.get("credits"),
+                "remaining_label": status.get("credits_label", "-"),
+                "label": f"账号 {user.get('username')} 的额度（{status.get('credits_label')}）",
+            }
+        if not config.server.auth_enabled:
+            return {"ok": True, "source": "none", "label": "服务未开启鉴权", "remaining_label": "不限"}
+        return {
+            "ok": False,
+            "source": "none",
+            "reason": "请填写授权码，或登录后使用账号额度",
+        }
+
+    def consume_quota(task_id: str, code: str, user: dict[str, Any] | None) -> str | None:
+        """扣次：授权码优先；成功返回 None，失败返回错误信息。"""
+        if not config.server.auth_enabled:
             return None
         try:
-            auth.consume(
-                str(user.get("username", "")),
-                task_id,
-                cost=config.server.credits_per_task,
+            result = auth.consume(
+                task_id=task_id,
+                code=(code or "").strip().upper(),
+                user=str(user.get("username", "")) if user else "",
                 detail="启动刷课任务",
             )
-            auth.log("consume", actor=str(user.get("username", "")), target=task_id, ip=_client_ip())
-            return None
         except AuthError as exc:
             return str(exc)
+        auth.log(
+            "consume",
+            actor=str(user.get("username", "")) if user else (result.get("code") or "匿名"),
+            target=task_id,
+            detail=f"来源={result.get('source')} 剩余={result.get('remaining_label')}",
+            ip=_client_ip(),
+        )
+        return None
 
     def _task_access(task_id: str):
-        """任务访问控制：返回 (record, 错误响应)。普通用户只能看自己的任务。"""
-        denied = require_user()
-        if denied:
-            return None, denied
+        """任务访问控制：未登录可以看"没有归属"的任务（授权码任务），
+        登录用户只能看自己的，管理员能看全部。"""
         user = current_user()
         record = manager.get_task(task_id)
         if record is None:
             return None, (jsonify({"error": "任务不存在"}), 404)
-        if user and user.get("role") != "admin" and record.owner and record.owner != user.get("username"):
-            return None, (jsonify({"error": "无权访问该任务"}), 403)
-        return record, None
+        if not config.server.auth_enabled:
+            return record, None
+        if user and user.get("role") == "admin":
+            return record, None
+
+        code = (request.args.get("code") or "").strip().upper()
+        if code and record.code and record.code == code:
+            return record, None
+        if user and record.owner and record.owner == user.get("username"):
+            return record, None
+        # 授权码任务在创建时若未登录，owner 为空；此时只有带对授权码才能访问
+        if not record.owner and not record.code:
+            return record, None
+        return None, (jsonify({"error": "无权访问该任务（授权码不匹配）"}), 403)
 
     @app.errorhandler(401)
     def _unauthorized(_error):
@@ -401,17 +429,14 @@ def create_app(
     # ------------------------------------------------------------------ 页面
     @app.get("/")
     def index() -> str:
+        # 不强制登录：进页面就能用，靠"授权码"或"登录后的账号额度"来放行
         user = current_user()
-        if user is None and config.server.auth_enabled:
-            return redirect(url_for("login"))
-        quota = auth.quota_status(str(user.get("username", ""))) if user else {"ok": True}
+        quota = auth.quota_status(str(user.get("username", ""))) if user else {}
         return render_template(
             "index.html",
-            has_token="1" if config.server.web_token else "",
             max_parallel=config.server.web_max_parallel_tasks,
             user=user or {},
             quota=quota,
-            admin_path=config.server.admin_path,
             auth_enabled=config.server.auth_enabled,
         )
 
@@ -437,14 +462,23 @@ def create_app(
     # ------------------------------------------------------------------ 任务
     @app.get("/api/tasks")
     def api_list_tasks() -> Response:
-        denied = require_user()
-        if denied:
-            return denied
         user = current_user()
+        code = (request.args.get("code") or "").strip().upper()
         limit = min(500, max(1, request.args.get("limit", 100, type=int)))
         tasks = manager.list_tasks(limit)
-        if user and user.get("role") != "admin":
-            tasks = [item for item in tasks if item.get("owner") == user.get("username")]
+        if not config.server.auth_enabled:
+            pass  # 未开启鉴权：不区分归属
+        elif not (user and user.get("role") == "admin"):
+            # 未登录时用授权码当身份：只看得到该授权码启动的任务
+            if user:
+                tasks = [
+                    item
+                    for item in tasks
+                    if item.get("owner") == user.get("username")
+                    or (code and item.get("code") == code)
+                ]
+            else:
+                tasks = [item for item in tasks if code and item.get("code") == code]
         costs = usage.by_task()
         for task in tasks:
             stat = costs.get(str(task.get("id")), {})
@@ -460,43 +494,34 @@ def create_app(
     def api_me() -> Response:
         user = current_user()
         if user is None:
-            return jsonify({"error": "未登录", "need_login": True}), 401
+            return jsonify(
+                {
+                    "user": None,
+                    "logged_in": False,
+                    "auth_enabled": config.server.auth_enabled,
+                    "is_admin": False,
+                    "quota": None,
+                }
+            )
         quota = auth.quota_status(str(user.get("username", "")))
         return jsonify(
             {
                 "user": user,
+                "logged_in": True,
                 "quota": quota,
                 "auth_enabled": config.server.auth_enabled,
                 "is_admin": user.get("role") == "admin",
-                "admin_path": config.server.admin_path,
                 "usage": usage.totals(user=str(user.get("username", ""))),
             }
         )
 
-    @app.post("/api/redeem")
-    def api_redeem() -> Response:
-        user = current_user()
-        if user is None:
-            return jsonify({"error": "未登录", "need_login": True}), 401
+    @app.post("/api/quota/check")
+    def api_quota_check() -> Response:
+        """开始刷课前校验：告诉前端这次会消耗「授权码」还是「账号额度」、还剩几次。"""
         payload = request.get_json(silent=True) or {}
-        code = str(payload.get("code", "")).strip()
-        if not code:
-            return jsonify({"error": "请输入卡密"}), 400
-        try:
-            result = auth.redeem_code(code, str(user.get("username", "")))
-        except AuthError as exc:
-            auth.log("redeem_failed", actor=str(user.get("username", "")), target=code, ip=_client_ip())
-            return jsonify({"error": str(exc)}), 400
-        auth.log("redeem", actor=str(user.get("username", "")), target=result["code"],
-                 detail=f"+{result['credits']} 次", ip=_client_ip())
-        return jsonify(
-            {
-                "ok": True,
-                "credits": result["credits"],
-                "user": result["user"],
-                "quota": auth.quota_status(str(user.get("username", ""))),
-            }
-        )
+        code = str(payload.get("code", "") or "")
+        info = resolve_quota(code, current_user())
+        return jsonify({"quota": info, "ok": bool(info.get("ok"))}), (200 if info.get("ok") else 402)
 
     @app.get("/api/tasks/<task_id>")
     def api_get_task(task_id: str) -> Response:
@@ -513,9 +538,10 @@ def create_app(
             return jsonify({"error": "请至少输入一个账号"}), 400
 
         user = current_user()
-        denied = quota_guard(user)
-        if denied:
-            return denied
+        code = str(payload.get("code", "") or "")
+        quota = resolve_quota(code, user)
+        if not quota.get("ok"):
+            return jsonify({"error": quota.get("reason", "额度不足"), "quota": quota}), 402
 
         course_ids = _parse_course_ids(
             payload.get("course_ids") or payload.get("courses")
@@ -538,6 +564,7 @@ def create_app(
                     account["username"],
                     account["password"],
                     owner=str(user.get("username", "")) if user else "",
+                    code=code,
                     display_name=display_name,
                     course_ids=course_ids,
                     speed=speed,
@@ -548,7 +575,7 @@ def create_app(
                     use_cookies=use_cookies,
                     cookie=cookie,
                 )
-                credit_error = consume_credit(user, record.id)
+                credit_error = consume_quota(record.id, code, user)
                 if credit_error:
                     manager.stop_task(record.id)
                     manager.delete_task(record.id)
@@ -574,12 +601,10 @@ def create_app(
             return jsonify({"error": "读取课程列表请只填一个账号（批量模式默认刷全部课程）"}), 400
 
         user = current_user()
-        denied = require_user()
-        if denied:
-            return denied
-        denied = quota_guard(user)
-        if denied:
-            return denied
+        code = str(payload.get("code", "") or "")
+        quota = resolve_quota(code, user)
+        if not quota.get("ok"):
+            return jsonify({"error": quota.get("reason", "额度不足"), "quota": quota}), 402
 
         account = accounts[0]
         try:
@@ -587,6 +612,7 @@ def create_app(
                 account["username"],
                 account["password"],
                 owner=str(user.get("username", "")) if user else "",
+                code=code,
                 speed=_optional_float(payload, "speed", 1.0, 2.0),
                 jobs=_optional_int(payload, "jobs", 1, 16),
                 submit=None if payload.get("submit") is None else bool(payload.get("submit")),
@@ -607,6 +633,7 @@ def create_app(
                 "username": record.username,
                 "courses": courses,
                 "count": len(courses),
+                "quota": quota,
             }
         )
 
@@ -616,17 +643,15 @@ def create_app(
         payload = request.get_json(silent=True) or {}
         course_ids = _parse_course_ids(payload.get("course_ids"))
         user = current_user()
-        denied = require_user()
-        if denied:
-            return denied
-        denied = quota_guard(user)
-        if denied:
-            return denied
+        code = str(payload.get("code", "") or "")
+        quota = resolve_quota(code, user)
+        if not quota.get("ok"):
+            return jsonify({"error": quota.get("reason", "额度不足"), "quota": quota}), 402
         try:
             record = manager.start_prepared_task(task_id, course_ids)
         except TaskError as exc:
             return jsonify({"error": str(exc)}), 400
-        credit_error = consume_credit(user, record.id)
+        credit_error = consume_quota(record.id, code, user)
         if credit_error:
             manager.stop_task(record.id)
             manager.delete_task(record.id)
