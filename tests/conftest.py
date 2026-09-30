@@ -30,6 +30,8 @@ def config_dict(tmp_path: Path) -> dict:
             "max_concurrent_accounts": 1,
             "run_timeout_minutes": 30,
             "retry_on_failure": 0,
+            # 这些用例关注任务接口本身，鉴权另有专门用例覆盖
+            "auth_enabled": False,
         },
         "study": {
             "speed": 1.0,

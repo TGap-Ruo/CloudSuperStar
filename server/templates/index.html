@@ -143,6 +143,11 @@
   <div class="header-badges">
     <span class="badge" id="badgeDeepseek">检测 DeepSeek…</span>
     <span class="badge" id="badgeStats">运行中 0</span>
+    <span class="badge" id="badgeCredits">额度 {{ quota.credits_label if quota else '-' }}</span>
+    <span class="badge">{% if user %}{{ user.username }}（{{ '管理员' if user.role == 'admin' else '用户' }}）{% else %}未登录{% endif %}</span>
+    {% if auth_enabled %}<span class="badge" style="cursor:pointer" onclick="openRedeem()">兑换卡密</span>{% endif %}
+    {% if user and user.role == 'admin' %}<a class="badge" href="{{ admin_path }}" style="text-decoration:none">管理后台</a>{% endif %}
+    {% if auth_enabled %}<a class="badge" href="/logout" style="text-decoration:none">退出</a>{% endif %}
     <span class="badge" id="badgeVersion">v—</span>
   </div>
 </div>
@@ -247,10 +252,10 @@
         <span><i class="dot" style="background:#dc2626"></i>失败 <b id="stFailed">0</b></span>
         <span><i class="dot" style="background:#6b7280"></i>已停止 <b id="stStopped">0</b></span>
       </div>
-      <div class="task-list" id="taskList">
-        <div class="empty">暂无任务</div>
-      </div>
+    <div class="task-list" id="taskList">
+      <div class="empty">暂无任务</div>
     </div>
+  </div>
   </div>
 
   <div class="card">
@@ -284,6 +289,20 @@
         <thead><tr><th>#</th><th>账号</th><th>开始(UTC)</th><th>状态</th><th>章节</th><th>答题命中</th><th>耗时</th><th>信息</th></tr></thead>
         <tbody id="runsBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="redeemModal" style="display:none">
+  <div class="card" style="width:420px">
+    <div class="card-head">兑换卡密</div>
+    <div class="card-body">
+      <div class="hint" style="margin-bottom:10px">输入管理员发放的卡密，兑换刷课次数。</div>
+      <div class="field">
+        <input type="text" id="redeemCode" placeholder="例如 A1B2C3D4E5" style="text-transform:uppercase">
+      </div>
+      <button class="btn btn-primary" id="redeemBtn" onclick="submitRedeem()">兑换</button>
+      <div class="hint" style="margin-top:10px">当前额度：<b id="redeemCredits">{{ quota.credits_label if quota else '-' }}</b></div>
     </div>
   </div>
 </div>
@@ -577,8 +596,12 @@ function renderTasks() {
     const s = t.summary || {};
     const chapter = s.chapters_total ? ('章节 ' + (s.chapters_finished || 0) + '/' + s.chapters_total) : '';
     const answer = s.answer_total ? ('答题命中 ' + (s.answer_covered || 0) + '/' + s.answer_total) : '';
-    const extra = (chapter || answer)
-      ? '<div class="task-meta">' + esc(chapter) + (chapter && answer ? ' · ' : '') + esc(answer) + '</div>'
+    const cost = (t.usage && t.usage.total_tokens)
+      ? ('AI ' + (t.usage.total_tokens) + ' tokens · ' + (t.usage.cost_display || ''))
+      : '';
+    const extra = (chapter || answer || cost)
+      ? '<div class="task-meta">' + esc(chapter) + (chapter && answer ? ' · ' : '') + esc(answer) +
+        (cost ? (chapter || answer ? ' · ' : '') + esc(cost) : '') + '</div>'
       : '';
     const reason = t.stop_reason ? (' · ' + esc(t.stop_reason)) : '';
     const buttons = t.status === 'running'
@@ -682,6 +705,35 @@ function classify(line) {
 }
 
 function clearOutput() { document.getElementById('terminal').innerHTML = ''; }
+
+/* ───────────── 卡密兑换 / 额度 ───────────── */
+function openRedeem() {
+  document.getElementById('redeemModal').style.display = 'flex';
+  document.getElementById('redeemCode').value = '';
+}
+
+function closeRedeem() {
+  document.getElementById('redeemModal').style.display = 'none';
+}
+
+async function submitRedeem() {
+  const code = document.getElementById('redeemCode').value.trim();
+  if (!code) { toast('请输入卡密', 'error'); return; }
+  const btn = document.getElementById('redeemBtn');
+  btn.disabled = true; btn.textContent = '兑换中…';
+  try {
+    const data = await api('/api/redeem', { method: 'POST', body: JSON.stringify({ code: code }) });
+    const label = (data.quota && data.quota.credits_label) || '-';
+    document.getElementById('redeemCredits').textContent = label;
+    document.getElementById('badgeCredits').textContent = '额度 ' + label;
+    toast('兑换成功，增加 ' + data.credits + ' 次，当前额度 ' + label, 'ok');
+    closeRedeem();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '兑换';
+  }
+}
 
 function downloadLog() {
   if (!currentTaskId) return;

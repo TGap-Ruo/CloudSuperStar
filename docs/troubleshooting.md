@@ -92,6 +92,43 @@ sudo systemctl restart chaoxing-web chaoxing-serve
 
 ## Web 控制台
 
+**登录相关**
+
+* 第一次部署怎么进后台？初始管理员账号密码在部署输出里打印过，也在
+  `/var/lib/chaoxing/initial_admin_password.txt`（用完建议删掉）；如果没设 `admin_password`，
+  它会被随机生成。也可以用 `grep -A2 '管理员' /var/log/...` 或 `journalctl -u chaoxing-web | grep 初始密码` 找。
+* 忘记管理员密码：停掉 web 服务，删掉 `state.db` 里的 admin 记录不可取；更简单的办法是
+  用 `sqlite3 /var/lib/chaoxing/state.db` 不行——请用下面这段脚本重置：
+  ```bash
+  cd /opt/chaoxing && .venv/bin/python -c "
+  from server.auth import AuthManager
+  a = AuthManager('/var/lib/chaoxing/state.db')
+  a.set_password('admin', '新密码至少6位')
+  print('已重置')"
+  sudo systemctl restart chaoxing-web
+  ```
+* 登录失败次数过多会临时封禁该 IP（5 分钟 8 次），等几分钟即可。
+
+**额度/卡密相关**
+
+* 提示「刷课次数已用完」：到后台给该用户加额度，或生成卡密让用户自己兑换。
+* 提示「今日任务数已达上限」：用户设置了 `daily_task_limit`，后台可改。
+* 任务失败会自动退还额度；如果没退，检查 `server.refund_on_failure` 是否为 true，
+  以及后台「审计日志」里有没有记录。
+* 卡密提示「已用尽」但你没用过：可能这张卡是"有限次数"类型且 `max_uses` 设小了，
+  后台点「重置」可清零已用次数。
+
+**费用/token 相关**
+
+* 「用量与费用」是空的：只有**真正调用过大模型**才会有记录。纯看视频不产生 token；
+  命中缓存（`cache.json`）的题目也不会重复调用模型。
+* 费用和 DeepSeek 官方账单有出入：见 [admin.md](admin.md#五token-用量与费用是怎么算的)
+  里列的 5 类正常差异；先把后台「系统设置 → 计费单价」按官网最新价格改对。
+* 想省钱：① 保持 `submit: true` 让答对的题进缓存，重刷不再调用；② 用 `deepseek-flash`
+  而不是 `deepseek-v4-pro`；③ 非高峰时段跑（UTC 01-04 / 06-10 之外，即北京时间
+  9-12 点、14-18 点之外）**注意高峰区间是 UTC**，北京时间的高峰是 09:00-12:00 与 14:00-18:00，
+  非高峰正好相反——把任务安排在晚上跑更便宜。
+
 **打开页面提示"需要访问令牌" / 接口返回 401**
 
 * 部署脚本会打印形如 `http://IP:8765/?token=xxxx` 的地址，直接用它打开即可（token 会被浏览器记住）。

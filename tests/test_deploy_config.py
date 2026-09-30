@@ -121,3 +121,41 @@ def test_replaces_placeholder_key(tmp_path):
     providers = _read(target)["answer"]["providers"]
     assert len(providers) == 1
     assert providers[0]["key"] == "sk-real-key"
+
+
+def test_existing_model_is_preserved(tmp_path):
+    """重复部署不应把正在跑通的模型改掉（除非显式 --force-model）。"""
+    target = tmp_path / "config.yaml"
+    target.write_text(
+        yaml.safe_dump(
+            {
+                "answer": {
+                    "providers": [
+                        {"type": "AI", "base_url": "https://api.deepseek.com/v1",
+                         "key": "sk-old", "model": "deepseek-chat"}
+                    ]
+                }
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+
+    write_config_main(["--config", str(target), "--deepseek-key", "sk-new"])
+    provider = _read(target)["answer"]["providers"][0]
+    assert provider["key"] == "sk-new"           # key 会更新
+    assert provider["model"] == "deepseek-chat"  # 模型保留
+
+    write_config_main(["--config", str(target), "--deepseek-key", "sk-3", "--force-model",
+                       "--model", "deepseek-flash"])
+    assert _read(target)["answer"]["providers"][0]["model"] == "deepseek-flash"
+
+
+def test_new_deployment_uses_current_default_model(tmp_path):
+    target = tmp_path / "config.yaml"
+    write_config_main(["--config", str(target), "--deepseek-key", "sk-abc"])
+    table = _read(target)
+    assert table["answer"]["providers"][0]["model"] == "deepseek-flash"
+    assert table["server"]["auth_enabled"] is True
+    assert table["server"]["admin_path"] == "/admin"
+    assert table["pricing"]["deepseek-flash"]["cache_miss"] == 0.3

@@ -27,6 +27,28 @@ __all__ = ["CacheDAO", "Tiku", "TikuFallback", "TikuYanxi", "TikuGo", "TikuLike"
            "TikuManual"]
 
 
+# ─────────────── 大模型用量回调（服务端用于统计 token / 费用）───────────────
+# 上游没有这块：服务端需要知道"刷一个账号花了多少钱"，所以在每次调用大模型后
+# 回调一次，把 provider / model / usage 交给外部记录（见 server/usage.py）。
+_usage_hook = None
+
+
+def set_usage_hook(hook) -> None:
+    """注册用量回调；hook(payload) 会收到 {provider, model, usage, kind}。"""
+    global _usage_hook
+    _usage_hook = hook
+
+
+def _report_usage(provider: str, model: str, usage, kind: str = "answer") -> None:
+    hook = _usage_hook
+    if hook is None:
+        return
+    try:
+        hook({"provider": provider, "model": model, "usage": usage, "kind": kind})
+    except Exception as exc:  # noqa: BLE001 - 统计失败绝不能影响答题
+        logger.debug(f"用量回调异常: {exc}")
+
+
 class CacheDAO:
     """
     @Author: SocialSisterYi
@@ -1309,6 +1331,8 @@ class AI(Tiku):
                 )
             ))
 
+        _report_usage("AI", self.model, getattr(completion, "usage", None), kind="answer")
+
         try:
             response = json.loads(remove_md_json_wrapper(completion.choices[0].message.content))
             sep = "\n"
@@ -1354,6 +1378,9 @@ class AI(Tiku):
                     ],
                     max_tokens=200  # 增大以支持可能返回的 reasoning_content
                 ))
+
+                _report_usage("AI", self.model, getattr(completion, "usage", None),
+                              kind="connection_check")
 
                 # 统一检查响应
                 if completion.choices:
@@ -1449,6 +1476,7 @@ class SiliconFlow(Tiku):
 
             if response.status_code == 200:
                 result = response.json()
+                _report_usage("SiliconFlow", self.model_name, result.get("usage"), kind="answer")
                 content = result['choices'][0]['message']['content']
                 parsed = json.loads(remove_md_json_wrapper(content))
                 return "\n".join(parsed['Answer']).strip()
@@ -1510,6 +1538,8 @@ class SiliconFlow(Tiku):
 
                 if response.status_code == 200:
                     result = response.json()
+                    _report_usage("SiliconFlow", self.model_name, result.get("usage"),
+                                  kind="connection_check")
                     if result.get('choices') and result['choices'][0]['message']['content']:
                         logger.info(f'{self.name} 连接检查成功')
                         return True

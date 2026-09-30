@@ -287,6 +287,23 @@ class Store:
         with self._lock:
             self._conn.close()
 
+    # ------------------------------------------------- 通用 SQL（供其它模块复用）
+    def executescript(self, script: str) -> None:
+        """执行一段建表/索引脚本（其它模块自带表结构时使用）。"""
+        with self._lock:
+            self._conn.executescript(script)
+            self._conn.commit()
+
+    def execute(self, sql: str, params: tuple | dict = ()) -> None:
+        with self._lock:
+            self._conn.execute(sql, params)
+            self._conn.commit()
+
+    def query(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
     def __enter__(self) -> "Store":
         return self
 

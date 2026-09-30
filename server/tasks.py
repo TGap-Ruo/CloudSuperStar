@@ -68,6 +68,7 @@ _TASK_FIELDS = {
     "summary",
     "report_file",
     "courses",
+    "owner",
 }
 
 CommandBuilder = Callable[["TaskRecord"], tuple[list[str], Path, dict[str, str]]]
@@ -99,6 +100,7 @@ class TaskRecord:
     summary: dict[str, Any] | None = None
     report_file: str = ""
     courses: list[dict[str, Any]] = field(default_factory=list)
+    owner: str = ""          # 提交该任务的用户（用于用量/额度归属）
 
     def to_dict(self) -> dict[str, Any]:
         """对外输出（不含任何密码信息）。"""
@@ -116,6 +118,7 @@ class TaskRecord:
             "summary": self.summary,
             "has_log": bool(self.log_file and Path(self.log_file).is_file()),
             "courses": list(self.courses),
+            "owner": self.owner,
         }
 
 
@@ -131,6 +134,7 @@ class TaskManager:
         max_parallel: int | None = None,
         command_builder: CommandBuilder | None = None,
         courses_provider: CoursesProvider | None = None,
+        on_finish: Callable[["TaskRecord"], None] | None = None,
     ):
         self.config_path = Path(config_path).expanduser().resolve()
         self.config = config
@@ -140,6 +144,7 @@ class TaskManager:
         self.max_parallel = max_parallel or config.server.web_max_parallel_tasks
         self.command_builder = command_builder
         self.courses_provider = courses_provider or self._default_courses_provider
+        self.on_finish = on_finish
 
         self._tasks: dict[str, TaskRecord] = {}
         self._buffers: dict[str, deque[str]] = {}
@@ -247,6 +252,7 @@ class TaskManager:
         username: str,
         password: str,
         *,
+        owner: str = "",
         display_name: str = "",
         course_ids: Optional[list[str]] = None,
         speed: Optional[float] = None,
@@ -261,6 +267,7 @@ class TaskManager:
         record = self._create_record(
             username,
             password,
+            owner=owner,
             display_name=display_name,
             course_ids=course_ids,
             speed=speed,
@@ -285,6 +292,7 @@ class TaskManager:
         username: str,
         password: str,
         *,
+        owner: str = "",
         display_name: str = "",
         speed: Optional[float] = None,
         jobs: Optional[int] = None,
@@ -298,6 +306,7 @@ class TaskManager:
         record = self._create_record(
             username,
             password,
+            owner=owner,
             display_name=display_name,
             course_ids=None,
             speed=speed,
@@ -352,6 +361,7 @@ class TaskManager:
         username: str,
         password: str,
         *,
+        owner: str = "",
         display_name: str = "",
         course_ids: Optional[list[str]] = None,
         speed: Optional[float] = None,
@@ -383,6 +393,7 @@ class TaskManager:
                 id=task_id,
                 account=account,
                 username=username,
+                owner=owner,
                 display_name=(display_name or username).strip() or username,
                 status=SELECTING_STATUS,
                 options={
@@ -518,13 +529,17 @@ class TaskManager:
             "--account",
             record.account,
         ]
-        return command, project_root(), self._child_env()
+        return command, project_root(), self._child_env(record)
 
-    def _child_env(self) -> dict[str, str]:
+    def _child_env(self, record: TaskRecord | None = None) -> dict[str, str]:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         env["TQDM_DISABLE"] = "1"
+        # 供 server.runner 写入 AI 用量时带上归属信息（任务号 / 提交人）
+        if record is not None:
+            env["CX_TASK_ID"] = record.id
+            env["CX_USER"] = record.owner
         return env
 
     def _default_courses_provider(
@@ -544,7 +559,7 @@ class TaskManager:
             completed = subprocess.run(
                 command,
                 cwd=str(project_root()),
-                env=self._child_env(),
+                env=self._child_env(record),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -675,6 +690,11 @@ class TaskManager:
                 self._processes.pop(task_id, None)
                 self._handles.pop(task_id, None)
             self._save_index()
+            if record is not None and self.on_finish is not None:
+                try:
+                    self.on_finish(record)
+                except Exception:  # noqa: BLE001 - 回调异常不影响任务状态
+                    logger.exception("任务结束回调异常 task=%s", task_id)
 
     def _load_summary(self, record: TaskRecord) -> dict[str, Any] | None:
         """读取任务最近一次运行的 JSON 报告，供界面展示。"""

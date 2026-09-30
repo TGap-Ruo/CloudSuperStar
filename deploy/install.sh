@@ -26,13 +26,15 @@
 #
 #  常用参数：
 #    --deepseek-key KEY    直接提供 DeepSeek API Key（默认交互式输入，适合自动化）
-#    --model NAME          DeepSeek 模型，默认 deepseek-chat
+#    --model NAME          DeepSeek 模型，默认 deepseek-flash
 #    --base-url URL        API 地址，默认 https://api.deepseek.com/v1
 #    --port N              Web 控制台端口，默认 8765
 #    --timezone TZ         定时任务时区，默认取服务器 /etc/timezone（国内建议 Asia/Shanghai）
 #    --token TOKEN         访问令牌；默认自动随机生成
 #    --no-token            不启用访问令牌（任何人可访问，风险自负）
 #    --max-parallel N      同时运行的任务数上限，默认 8
+#    --admin-path PATH     管理后台入口，默认 /admin
+#    --admin-password PW   初始管理员密码，默认随机生成并打印
 #    --apt-mirror M        apt 源: auto(默认)/aliyun/tsinghua/none（国内服务器加速）
 #    --pip-index URL       pip 源，默认清华镜像
 #    --repo OWNER/NAME     代码仓库，默认 tgap/cloud-super-star
@@ -53,7 +55,10 @@ WEB_TOKEN=""
 WEB_HOST="0.0.0.0"
 TIMEZONE=""
 MAX_PARALLEL="8"
-MODEL="deepseek-chat"
+ADMIN_PATH="/admin"
+ADMIN_USER="admin"
+ADMIN_PASSWORD=""
+MODEL="deepseek-flash"
 BASE_URL="https://api.deepseek.com/v1"
 DEEPSEEK_KEY="${DEEPSEEK_KEY:-}"
 REPO="${REPO:-}"                        # --repo 会同时覆盖两个托管站
@@ -88,13 +93,15 @@ usage() {
 
 参数：
   --deepseek-key KEY   直接提供 DeepSeek API Key（默认交互式输入）
-  --model NAME         模型，默认 deepseek-chat
+  --model NAME         模型，默认 deepseek-flash
   --base-url URL       API 地址，默认 https://api.deepseek.com/v1
   --port N             控制台端口，默认 8765
   --timezone TZ        定时任务时区（国内建议 Asia/Shanghai）
   --token TOKEN        访问令牌，默认随机生成
   --no-token           关闭访问令牌（风险自负）
   --max-parallel N     同时运行任务数上限，默认 8
+  --admin-path PATH    管理后台入口，默认 /admin（建议改成别人猜不到的路径）
+  --admin-password PW  初始管理员密码，留空则随机生成并在结束时打印
   --apt-mirror M       apt 源: auto/aliyun/tsinghua/none（默认 auto）
   --pip-index URL      pip 源，默认清华镜像
   --repo OWNER/NAME    同时覆盖两个托管站的仓库名（默认 Gitee: tgap/cloud-super-star，GitHub: TGap-Ruo/CloudSuperStar）
@@ -359,6 +366,9 @@ while [[ $# -gt 0 ]]; do
     --token)          WEB_TOKEN="${2:-}"; shift 2 ;;
     --no-token)       WEB_TOKEN="__NO_TOKEN__"; shift ;;
     --max-parallel)   MAX_PARALLEL="${2:-}"; shift 2 ;;
+    --admin-path)     ADMIN_PATH="${2:-/admin}"; shift 2 ;;
+    --admin-user)     ADMIN_USER="${2:-admin}"; shift 2 ;;
+    --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
     --repo)           REPO="${2:-}"; shift 2 ;;
     --branch)         BRANCH="${2:-}"; shift 2 ;;
     --gitee)          GIT_HOST="gitee"; shift ;;
@@ -606,6 +616,9 @@ fi
   --web-token "${WEB_TOKEN}" \
   --web-max-parallel "${MAX_PARALLEL}" \
   --timezone "${TIMEZONE}" \
+  --admin-path "${ADMIN_PATH}" \
+  --admin-user "${ADMIN_USER}" \
+  --admin-password "${ADMIN_PASSWORD}" \
   || die "生成配置文件失败"
 
 cat > "${ETC_DIR}/chaoxing.env" <<EOF
@@ -675,6 +688,12 @@ PUBLIC_IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
 [[ -z "${PUBLIC_IP}" ]] && PUBLIC_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [[ -z "${PUBLIC_IP}" ]] && PUBLIC_IP="<服务器IP>"
 
+# 首次部署时 Web 服务会随机生成管理员密码并落盘，这里读出来展示
+INITIAL_ADMIN_PASSWORD=""
+if [[ -f "${DATA_DIR}/initial_admin_password.txt" ]]; then
+  INITIAL_ADMIN_PASSWORD="$(grep -m1 '^密码：' "${DATA_DIR}/initial_admin_password.txt" 2>/dev/null | sed 's/^密码：//' || true)"
+fi
+
 TOKEN_SUFFIX=""
 [[ -n "${WEB_TOKEN}" ]] && TOKEN_SUFFIX="?token=${WEB_TOKEN}"
 
@@ -683,8 +702,12 @@ cat <<EOF
 ${GREEN}${BOLD}部署完成 ✅${NC}
 
   ${BOLD}控制台地址${NC}：http://${PUBLIC_IP}:${WEB_PORT}/${TOKEN_SUFFIX}
+  ${BOLD}管理后台${NC}：http://${PUBLIC_IP}:${WEB_PORT}${ADMIN_PATH}/
+  ${BOLD}管理员账号${NC}：${ADMIN_USER}
+  ${BOLD}管理员密码${NC}：${ADMIN_PASSWORD:-${INITIAL_ADMIN_PASSWORD:-（首次启动随机生成，见 ${DATA_DIR}/initial_admin_password.txt）}}
   ${BOLD}访问令牌${NC}：${WEB_TOKEN:-（未启用）}
   ${BOLD}DeepSeek${NC}：${MODEL} @ ${BASE_URL}
+  ${BOLD}计费${NC}：按 DeepSeek 官方定价估算，后台「用量与费用」可看每个账号的 token 与花费
   ${BOLD}配置文件${NC}：${ETC_DIR}/config.yaml
   ${BOLD}数据目录${NC}：${DATA_DIR}
   ${BOLD}代码来源${NC}：${GIT_HOST} ${REPO}@${BRANCH}

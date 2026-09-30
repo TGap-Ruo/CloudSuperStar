@@ -21,7 +21,12 @@ import yaml
 
 
 def ensure_ai_provider(
-    answer: dict[str, Any], *, api_key: str, model: str, base_url: str
+    answer: dict[str, Any],
+    *,
+    api_key: str,
+    model: str,
+    base_url: str,
+    preserve_model: bool = False,
 ) -> None:
     providers = answer.get("providers")
     if not isinstance(providers, list):
@@ -43,7 +48,9 @@ def ensure_ai_provider(
     target["type"] = "AI"
     target["base_url"] = base_url
     target["key"] = api_key
-    target["model"] = model
+    # 已有配置里填过模型时默认不覆盖，避免把正在跑通的模型改掉
+    if not (preserve_model and target.get("model")):
+        target["model"] = model
     target.setdefault("min_interval_seconds", 3)
     answer["providers"] = providers
 
@@ -63,6 +70,11 @@ def build_config(
     run_timeout_minutes: int,
     default_submit: bool,
     reset_accounts: bool = False,
+    auth_enabled: bool = True,
+    admin_path: str = "/admin",
+    admin_user: str = "admin",
+    admin_password: str = "",
+    preserve_model: bool = False,
 ) -> dict[str, Any]:
     config: dict[str, Any] = dict(template or {})
 
@@ -77,8 +89,16 @@ def build_config(
             "web_token": web_token,
             "web_max_parallel_tasks": web_max_parallel,
             "run_timeout_minutes": run_timeout_minutes,
+            "auth_enabled": auth_enabled,
+            "admin_path": admin_path,
+            "admin_user": admin_user,
         }
     )
+    # 只在显式给了密码时写入；留空则保留原值（首次启动会随机生成并打印）
+    if admin_password:
+        server["admin_password"] = admin_password
+    else:
+        server.setdefault("admin_password", "")
     server.setdefault("log_level", "INFO")
     server.setdefault("max_concurrent_accounts", 1)
     server.setdefault("retry_on_failure", 1)
@@ -90,7 +110,13 @@ def build_config(
     answer.setdefault("cover_rate", 0.6)
     answer.setdefault("delay", 1.0)
     answer.setdefault("check_llm_connection", True)
-    ensure_ai_provider(answer, api_key=api_key, model=model, base_url=base_url)
+    ensure_ai_provider(
+        answer,
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        preserve_model=preserve_model,
+    )
     config["answer"] = answer
 
     config.setdefault("study", {})
@@ -107,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", required=True, help="目标配置文件路径")
     parser.add_argument("--template", default=None, help="模板路径（默认仓库 config.example.yaml）")
     parser.add_argument("--deepseek-key", required=True)
-    parser.add_argument("--model", default="deepseek-chat")
+    parser.add_argument("--model", default="deepseek-flash")
     parser.add_argument("--base-url", default="https://api.deepseek.com/v1")
     parser.add_argument("--data-dir", default="/var/lib/chaoxing")
     parser.add_argument("--web-host", default="0.0.0.0")
@@ -116,6 +142,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--web-max-parallel", type=int, default=8)
     parser.add_argument("--timezone", default="Asia/Shanghai")
     parser.add_argument("--run-timeout-minutes", type=int, default=360)
+    parser.add_argument("--auth-enabled", default="true", choices=["true", "false"])
+    parser.add_argument("--admin-path", default="/admin")
+    parser.add_argument("--admin-user", default="admin")
+    parser.add_argument("--admin-password", default="")
+    parser.add_argument("--force-model", action="store_true", help="即使配置里已有模型也强制覆盖")
     parser.add_argument(
         "--default-submit",
         default="true",
@@ -125,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config_path = Path(args.config).expanduser()
+    is_existing = config_path.is_file()
     if config_path.is_file():
         try:
             loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -162,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
         run_timeout_minutes=args.run_timeout_minutes,
         default_submit=args.default_submit == "true",
         reset_accounts=reset_accounts,
+        auth_enabled=args.auth_enabled == "true",
+        admin_path=args.admin_path,
+        admin_user=args.admin_user,
+        admin_password=args.admin_password,
+        preserve_model=is_existing and not args.force_model,
     )
 
     config_path.parent.mkdir(parents=True, exist_ok=True)

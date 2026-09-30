@@ -96,6 +96,7 @@ class RunReport:
     answer_covered: int = 0
     sign_in: dict[str, Any] = field(default_factory=dict)
     learning_count_added: bool = False
+    usage: dict[str, Any] = field(default_factory=dict)
     dry_run: bool = False
     log_file: str = ""
 
@@ -128,6 +129,7 @@ class RunReport:
             "answer_covered": self.answer_covered,
             "sign_in": self.sign_in,
             "learning_count_added": self.learning_count_added,
+            "usage": dict(self.usage),
             "dry_run": self.dry_run,
             "log_file": self.log_file,
         }
@@ -641,7 +643,8 @@ def run_account(
     run_id: Optional[str] = None,
 ) -> RunReport:
     """执行一次账号级刷课/答题，返回结构化报告。"""
-    paths = (data_paths or config.data_paths()).account(account.name)
+    data = data_paths or config.data_paths()
+    paths = data.account(account.name)
     setup_runtime_environment(paths, log_level=config.server.log_level, chdir=chdir)
     write_internal_config(config, account, paths)
 
@@ -656,6 +659,27 @@ def run_account(
         dry_run=dry_run,
         log_file=str(paths.log),
     )
+    # 记录本次运行的大模型用量（token / 费用）。任务号与所属用户由调度器/网页
+    # 通过环境变量传入，定时任务没有任务号时按账号聚合。
+    usage_task_id = os.environ.get("CX_TASK_ID", "")
+    usage_user = os.environ.get("CX_USER", "")
+    try:
+        from server.usage import UsageContext, install_usage_hook
+
+        install_usage_hook(
+            data.db,
+            UsageContext(
+                user=usage_user,
+                account=account.name,
+                task_id=usage_task_id,
+                run_id=report.run_id,
+            ),
+            pricing=config.pricing or None,
+        )
+    except Exception as exc:  # noqa: BLE001 - 统计失败不影响刷课
+        from chaoxing_core.logger import logger as _logger
+
+        _logger.debug("初始化用量统计失败: {}", exc)
     started = time.monotonic()
 
     try:
@@ -806,6 +830,17 @@ def run_account(
     finally:
         report.finished_at = datetime.now().isoformat(timespec="seconds")
         report.duration_seconds = time.monotonic() - started
+        try:
+            from server.usage import UsageRecorder
+
+            with UsageRecorder(data.db) as usage_recorder:
+                report.usage = (
+                    usage_recorder.for_task(usage_task_id)
+                    if usage_task_id
+                    else usage_recorder.for_account(account.name)
+                )
+        except Exception:  # noqa: BLE001
+            pass
         try:
             paths.ensure()
             paths.run_report(report.run_id).write_text(

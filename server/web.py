@@ -18,7 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,17 +29,42 @@ from flask import (
     Response,
     abort,
     jsonify,
+    redirect,
     render_template,
     request,
     send_file,
+    session,
+    url_for,
 )
 
+from server.admin import create_admin_blueprint
+from server.auth import AuthError, AuthManager
 from server.config import ServerConfig, load_config
 from server.scheduler import describe_schedule
 from server.store import Store, read_report
 from server.tasks import TaskError, TaskManager, deepseek_status
+from server.usage import UsageRecorder, format_cost
 
 logger = logging.getLogger("chaoxing.web")
+
+
+def _load_or_create_secret(path: Path) -> str:
+    """会话签名密钥：首次生成后落盘（0600），保证重启后登录态不失效。"""
+    try:
+        if path.is_file():
+            value = path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        value = secrets.token_urlsafe(48)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value, encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return value
+    except OSError:
+        return secrets.token_urlsafe(48)
 
 STATUS_TEXT = {
     "success": "完成",
@@ -58,6 +85,33 @@ def _token_from_request() -> str:
     if not token:
         token = request.headers.get("X-Token", "")
     return token
+
+
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_MAX_LOGIN_FAILURES = 8
+_LOGIN_FAILURE_WINDOW = 300  # 秒
+
+
+def _client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _is_login_blocked(ip: str) -> bool:
+    now = time.time()
+    records = [t for t in _LOGIN_FAILURES.get(ip, []) if now - t < _LOGIN_FAILURE_WINDOW]
+    _LOGIN_FAILURES[ip] = records
+    return len(records) >= _MAX_LOGIN_FAILURES
+
+
+def _record_login_failure(ip: str) -> None:
+    _LOGIN_FAILURES.setdefault(ip, []).append(time.time())
+
+
+def _clear_login_failures(ip: str) -> None:
+    _LOGIN_FAILURES.pop(ip, None)
 
 
 def _parse_accounts(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -147,6 +201,7 @@ def create_app(
     *,
     token: str | None = None,
     task_manager: TaskManager | None = None,
+    auth_manager: "AuthManager | None" = None,
 ) -> Flask:
     config_file = Path(config_path).expanduser().resolve()
     config: ServerConfig = load_config(config_file)
@@ -159,37 +214,205 @@ def create_app(
         static_folder=str(Path(__file__).parent / "static"),
     )
     app.config["JSON_AS_ASCII"] = False
+    data_paths = config.data_paths()
+    app.secret_key = _load_or_create_secret(data_paths.root / ".session_secret")
+    app.permanent_session_lifetime = timedelta(minutes=config.server.session_timeout_minutes)
 
-    manager = task_manager or TaskManager(config_file, config)
+    auth = auth_manager or AuthManager(data_paths.db)
+    initial_admin_password = ""
+    try:
+        created, initial_admin_password = auth.ensure_bootstrap_admin(
+            config.server.admin_user, config.server.admin_password
+        )
+        if created:
+            (data_paths.root / "initial_admin_password.txt").write_text(
+                f"用户名：{config.server.admin_user}\n密码：{initial_admin_password}\n"
+                f"（登录后请立即在后台修改；本文件可直接删除）\n",
+                encoding="utf-8",
+            )
+    except Exception:  # noqa: BLE001 - 鉴权初始化失败不阻塞服务
+        logger.exception("初始化管理员失败")
+
+    if initial_admin_password:
+        logger.warning(
+            "已创建初始管理员 %s，初始密码：%s（也写入了 %s）",
+            config.server.admin_user,
+            initial_admin_password,
+            data_paths.root / "initial_admin_password.txt",
+        )
+
+    usage = UsageRecorder(data_paths.db)
+
+    def _refund_on_finish(record) -> None:
+        """任务最终失败时退还额度（可配置关闭）。"""
+        if not config.server.refund_on_failure:
+            return
+        if record.status in {"failed", "timeout"}:
+            try:
+                if auth.refund(record.id):
+                    auth.log("refund", actor=record.owner or "system", target=record.id,
+                             detail=f"任务 {record.status}，自动退还额度")
+            except Exception:  # noqa: BLE001
+                logger.exception("退还额度失败")
+
+    manager = task_manager or TaskManager(config_file, config, on_finish=_refund_on_finish)
+    if task_manager is not None:
+        # 注入的 manager（测试/自定义）也要挂上退款回调，保证额度语义一致
+        previous_on_finish = manager.on_finish
+
+        def _composed_on_finish(record) -> None:
+            if previous_on_finish is not None:
+                try:
+                    previous_on_finish(record)
+                except Exception:  # noqa: BLE001
+                    logger.exception("自定义任务结束回调异常")
+            _refund_on_finish(record)
+
+        manager.on_finish = _composed_on_finish
 
     # ------------------------------------------------------------------ 鉴权
-    def _require_token() -> None:
-        expected = config.server.web_token
-        if not expected:
-            return
-        if _token_from_request() != expected:
-            abort(401)
+    def current_user() -> dict[str, Any] | None:
+        """识别当前身份：会话 → API Key → 兼容旧的 web_token（视为管理员）。"""
+        username = session.get("username")
+        if username:
+            user = auth.get_user(str(username))
+            if user and user.get("enabled"):
+                return user
+            session.clear()
 
-    @app.before_request
-    def _check_token() -> None:
-        if request.path in {"/healthz"}:
-            return
-        if request.path.startswith("/static/") or request.path == "/":
-            # 页面本身允许加载（前端会引导输入 token）
-            return
-        _require_token()
+        api_key = request.headers.get("X-Api-Key", "")
+        if api_key:
+            user = auth.verify_api_key(api_key)
+            if user and user.get("enabled"):
+                return user
+
+        expected = config.server.web_token
+        if expected and _token_from_request() == expected:
+            admin = auth.get_user(config.server.admin_user)
+            if admin and admin.get("enabled"):
+                return admin
+            return {
+                "username": "token-admin",
+                "role": "admin",
+                "enabled": True,
+                "credits": -1,
+                "credits_label": "不限",
+                "unlimited": True,
+            }
+        return None
+
+    def require_user(role: str | None = None):
+        """接口鉴权：返回 None 表示通过，否则返回可直接返回给前端的错误响应。"""
+        user = current_user()
+        if user is None:
+            # 配了访问令牌就按令牌校验（兼容旧部署），否则按是否开启登录鉴权决定
+            if config.server.web_token:
+                return jsonify({"error": "访问令牌无效或缺失", "need_token": True}), 401
+            if config.server.auth_enabled:
+                return jsonify({"error": "未登录或登录已过期", "need_login": True}), 401
+            return None
+        if role == "admin" and user.get("role") != "admin":
+            return jsonify({"error": "需要管理员权限"}), 403
+        return None
+
+    def quota_guard(user: dict[str, Any] | None, needed: int = 1):
+        if not config.server.auth_enabled or not user:
+            return None
+        status = auth.quota_status(str(user.get("username", "")))
+        if not status.get("ok"):
+            return jsonify({"error": status.get("reason", "额度不足"), "quota": status}), 402
+        return None
+
+    def consume_credit(user: dict[str, Any] | None, task_id: str) -> str | None:
+        """扣减额度；成功返回 None，失败返回错误信息。"""
+        if not config.server.auth_enabled or not user:
+            return None
+        try:
+            auth.consume(
+                str(user.get("username", "")),
+                task_id,
+                cost=config.server.credits_per_task,
+                detail="启动刷课任务",
+            )
+            auth.log("consume", actor=str(user.get("username", "")), target=task_id, ip=_client_ip())
+            return None
+        except AuthError as exc:
+            return str(exc)
+
+    def _task_access(task_id: str):
+        """任务访问控制：返回 (record, 错误响应)。普通用户只能看自己的任务。"""
+        denied = require_user()
+        if denied:
+            return None, denied
+        user = current_user()
+        record = manager.get_task(task_id)
+        if record is None:
+            return None, (jsonify({"error": "任务不存在"}), 404)
+        if user and user.get("role") != "admin" and record.owner and record.owner != user.get("username"):
+            return None, (jsonify({"error": "无权访问该任务"}), 403)
+        return record, None
 
     @app.errorhandler(401)
     def _unauthorized(_error):
-        return jsonify({"error": "访问令牌无效或缺失", "need_token": True}), 401
+        return jsonify({"error": "未登录或登录已过期", "need_login": True}), 401
+
+    # ------------------------------------------------------------- 登录 / 登出
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if request.method == "GET":
+            return render_template(
+                "login.html",
+                error=None,
+                admin_path=config.server.admin_path,
+                auth_enabled=config.server.auth_enabled,
+            )
+        payload = request.get_json(silent=True) or request.form
+        username = str(payload.get("username", "")).strip()
+        password = str(payload.get("password", ""))
+        ip = _client_ip()
+        if _is_login_blocked(ip):
+            return jsonify({"error": "登录失败次数过多，请 5 分钟后再试"}), 429
+        user = auth.verify_login(username, password)
+        if not user:
+            _record_login_failure(ip)
+            auth.log("login_failed", actor=username, ip=ip)
+            if request.is_json:
+                return jsonify({"error": "用户名或密码错误"}), 401
+            return render_template(
+                "login.html",
+                error="用户名或密码错误",
+                admin_path=config.server.admin_path,
+                auth_enabled=config.server.auth_enabled,
+            ), 401
+        _clear_login_failures(ip)
+        session.permanent = True
+        session["username"] = user["username"]
+        auth.log("login", actor=user["username"], ip=ip)
+        if request.is_json:
+            return jsonify({"ok": True, "user": user})
+        return redirect(url_for("index"))
+
+    @app.get("/logout")
+    def logout():
+        auth.log("logout", actor=session.get("username", ""), ip=_client_ip())
+        session.clear()
+        return redirect(url_for("login"))
 
     # ------------------------------------------------------------------ 页面
     @app.get("/")
     def index() -> str:
+        user = current_user()
+        if user is None and config.server.auth_enabled:
+            return redirect(url_for("login"))
+        quota = auth.quota_status(str(user.get("username", ""))) if user else {"ok": True}
         return render_template(
             "index.html",
             has_token="1" if config.server.web_token else "",
             max_parallel=config.server.web_max_parallel_tasks,
+            user=user or {},
+            quota=quota,
+            admin_path=config.server.admin_path,
+            auth_enabled=config.server.auth_enabled,
         )
 
     @app.get("/healthz")
@@ -214,14 +437,72 @@ def create_app(
     # ------------------------------------------------------------------ 任务
     @app.get("/api/tasks")
     def api_list_tasks() -> Response:
+        denied = require_user()
+        if denied:
+            return denied
+        user = current_user()
         limit = min(500, max(1, request.args.get("limit", 100, type=int)))
-        return jsonify({"tasks": manager.list_tasks(limit), "stats": manager.stats()})
+        tasks = manager.list_tasks(limit)
+        if user and user.get("role") != "admin":
+            tasks = [item for item in tasks if item.get("owner") == user.get("username")]
+        costs = usage.by_task()
+        for task in tasks:
+            stat = costs.get(str(task.get("id")), {})
+            task["usage"] = {
+                "calls": int(stat.get("calls", 0) or 0),
+                "total_tokens": int(stat.get("total_tokens", 0) or 0),
+                "cost": float(stat.get("cost", 0) or 0),
+                "cost_display": format_cost(float(stat.get("cost", 0) or 0)),
+            }
+        return jsonify({"tasks": tasks, "stats": manager.stats()})
+
+    @app.get("/api/me")
+    def api_me() -> Response:
+        user = current_user()
+        if user is None:
+            return jsonify({"error": "未登录", "need_login": True}), 401
+        quota = auth.quota_status(str(user.get("username", "")))
+        return jsonify(
+            {
+                "user": user,
+                "quota": quota,
+                "auth_enabled": config.server.auth_enabled,
+                "is_admin": user.get("role") == "admin",
+                "admin_path": config.server.admin_path,
+                "usage": usage.totals(user=str(user.get("username", ""))),
+            }
+        )
+
+    @app.post("/api/redeem")
+    def api_redeem() -> Response:
+        user = current_user()
+        if user is None:
+            return jsonify({"error": "未登录", "need_login": True}), 401
+        payload = request.get_json(silent=True) or {}
+        code = str(payload.get("code", "")).strip()
+        if not code:
+            return jsonify({"error": "请输入卡密"}), 400
+        try:
+            result = auth.redeem_code(code, str(user.get("username", "")))
+        except AuthError as exc:
+            auth.log("redeem_failed", actor=str(user.get("username", "")), target=code, ip=_client_ip())
+            return jsonify({"error": str(exc)}), 400
+        auth.log("redeem", actor=str(user.get("username", "")), target=result["code"],
+                 detail=f"+{result['credits']} 次", ip=_client_ip())
+        return jsonify(
+            {
+                "ok": True,
+                "credits": result["credits"],
+                "user": result["user"],
+                "quota": auth.quota_status(str(user.get("username", ""))),
+            }
+        )
 
     @app.get("/api/tasks/<task_id>")
     def api_get_task(task_id: str) -> Response:
-        record = manager.get_task(task_id)
-        if record is None:
-            return jsonify({"error": "任务不存在"}), 404
+        record, error = _task_access(task_id)
+        if error:
+            return error
         return jsonify(record.to_dict())
 
     @app.post("/api/tasks")
@@ -230,6 +511,11 @@ def create_app(
         accounts = _parse_accounts(payload)
         if not accounts:
             return jsonify({"error": "请至少输入一个账号"}), 400
+
+        user = current_user()
+        denied = quota_guard(user)
+        if denied:
+            return denied
 
         course_ids = _parse_course_ids(
             payload.get("course_ids") or payload.get("courses")
@@ -251,6 +537,7 @@ def create_app(
                 record = manager.start_task(
                     account["username"],
                     account["password"],
+                    owner=str(user.get("username", "")) if user else "",
                     display_name=display_name,
                     course_ids=course_ids,
                     speed=speed,
@@ -261,6 +548,12 @@ def create_app(
                     use_cookies=use_cookies,
                     cookie=cookie,
                 )
+                credit_error = consume_credit(user, record.id)
+                if credit_error:
+                    manager.stop_task(record.id)
+                    manager.delete_task(record.id)
+                    errors.append({"username": account["username"], "error": credit_error})
+                    continue
                 started.append(record.to_dict())
             except TaskError as exc:
                 errors.append({"username": account["username"], "error": str(exc)})
@@ -280,11 +573,20 @@ def create_app(
         if len(accounts) != 1:
             return jsonify({"error": "读取课程列表请只填一个账号（批量模式默认刷全部课程）"}), 400
 
+        user = current_user()
+        denied = require_user()
+        if denied:
+            return denied
+        denied = quota_guard(user)
+        if denied:
+            return denied
+
         account = accounts[0]
         try:
             record, courses = manager.prepare_task(
                 account["username"],
                 account["password"],
+                owner=str(user.get("username", "")) if user else "",
                 speed=_optional_float(payload, "speed", 1.0, 2.0),
                 jobs=_optional_int(payload, "jobs", 1, 16),
                 submit=None if payload.get("submit") is None else bool(payload.get("submit")),
@@ -313,14 +615,29 @@ def create_app(
         """课程勾选完成后启动任务。course_ids 为空表示刷全部课程。"""
         payload = request.get_json(silent=True) or {}
         course_ids = _parse_course_ids(payload.get("course_ids"))
+        user = current_user()
+        denied = require_user()
+        if denied:
+            return denied
+        denied = quota_guard(user)
+        if denied:
+            return denied
         try:
             record = manager.start_prepared_task(task_id, course_ids)
         except TaskError as exc:
             return jsonify({"error": str(exc)}), 400
+        credit_error = consume_credit(user, record.id)
+        if credit_error:
+            manager.stop_task(record.id)
+            manager.delete_task(record.id)
+            return jsonify({"error": credit_error}), 402
         return jsonify({"started": record.to_dict(), "stats": manager.stats()})
 
     @app.post("/api/tasks/<task_id>/stop")
     def api_stop_task(task_id: str) -> Response:
+        _, error = _task_access(task_id)
+        if error:
+            return error
         ok, message = manager.stop_task(task_id)
         if not ok:
             return jsonify({"error": message}), 400
@@ -328,6 +645,9 @@ def create_app(
 
     @app.delete("/api/tasks/<task_id>")
     def api_delete_task(task_id: str) -> Response:
+        _, error = _task_access(task_id)
+        if error:
+            return error
         ok, message = manager.delete_task(task_id)
         if not ok:
             return jsonify({"error": message}), 400
@@ -335,6 +655,9 @@ def create_app(
 
     @app.get("/api/tasks/<task_id>/output")
     def api_task_output(task_id: str) -> Response:
+        _, error = _task_access(task_id)
+        if error:
+            return error
         start_line = max(0, request.args.get("from", 0, type=int))
         output, total = manager.get_output(task_id, start_line)
         return jsonify({"output": output, "total_lines": total, "from": start_line})
@@ -345,12 +668,18 @@ def create_app(
         record = manager.get_task(task_id)
         if record is None or path is None:
             return jsonify({"error": "日志文件不存在"}), 404
+        _, error = _task_access(task_id)
+        if error:
+            return error
         filename = f"chaoxing_{record.username}_{task_id}.log"
         return send_file(path, as_attachment=True, download_name=filename)
 
     @app.get("/api/stream/<task_id>")
     def api_stream(task_id: str) -> Response:
         """SSE 实时输出：先把已有内容推完，再持续推送增量。"""
+        _, error = _task_access(task_id)
+        if error:
+            return error
 
         def generate():
             last_line = 0
@@ -443,6 +772,20 @@ def create_app(
     # 暴露给测试与 CLI
     app.extensions["task_manager"] = manager
     app.extensions["chaoxing_config"] = config
+    app.extensions["auth"] = auth
+    app.extensions["usage"] = usage
+
+    # ------------------------------------------------------------ 管理后台
+    admin_blueprint = create_admin_blueprint(
+        config,
+        config_file,
+        auth=auth,
+        manager=manager,
+        usage=usage,
+        current_user=current_user,
+        client_ip=_client_ip,
+    )
+    app.register_blueprint(admin_blueprint, url_prefix=config.server.admin_path)
     return app
 
 

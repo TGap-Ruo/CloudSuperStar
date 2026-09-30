@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy
 | 参数 | 说明 |
 | --- | --- |
 | `--deepseek-key sk-xxx` | 直接提供 Key（默认改为交互式输入，此项供自动化脚本使用） |
-| `--model deepseek-chat` | 答题模型（也可换 deepseek-reasoner 等） |
+| `--model deepseek-flash` | 答题模型（官方当前为 deepseek-flash / deepseek-v4-pro） |
 | `--port 8765` | 控制台端口 |
 | `--timezone Asia/Shanghai` | 定时任务时区（服务器是 UTC 时会告警） |
 | `--token XXX` / `--no-token` | 指定或关闭访问令牌（默认随机生成） |
@@ -86,6 +86,8 @@ curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy
 
 打开带 token 的地址后：
 
+* **登录**：默认开启了鉴权（`server.auth_enabled: true`），需要管理员分配的账号登录；
+  初始管理员账号密码由部署脚本打印（也写在 `/var/lib/chaoxing/initial_admin_password.txt`）。
 * **单个账号（先选课再刷）**：填手机号 + 密码 → 点「开始刷课」→ 程序先登录并**弹出该账号的全部课程列表**（可搜索、全选/全不选、多选或单选）→ 勾完点「开始刷课」才真正执行。弹窗里不勾任何课程 = 刷全部课程；点「取消」会丢弃这次选择并清理临时任务。
 * **批量并行**：切到「批量并行」，每行粘贴 `账号,密码`，一次启动多个任务，各自独立进程运行（批量模式不做课程选择，默认全部课程，可用高级设置里的课程 ID 限定）。
 * **高级设置**（可折叠）：只刷指定课程 ID、视频倍速、并发章节数、答完是否自动提交、最低题库覆盖率、章节检测重做次数。
@@ -93,9 +95,64 @@ curl -fsSL https://raw.githubusercontent.com/TGap-Ruo/CloudSuperStar/main/deploy
 * **任务列表**：运行中 / 已完成 / 失败 / 已停止 计数，支持停止、删除（同时清理日志与账号数据）、下载日志。
 * **实时日志**：SSE 推送，按级别着色（错误红 / 警告黄 / 完成绿），可自动滚动、一键清空。
 * **定时账号与历史运行**：表格展示 `config.yaml` 里的 cron 账号与最近运行记录（章节完成数、答题命中率、耗时）。
+* **额度与卡密**：顶部显示当前账号剩余额度，点「兑换卡密」输入管理员发的卡密即可充值；
+  每启动一个任务扣 1 次，任务失败自动退还。
+* **管理后台**：管理员登录后右上角会出现「管理后台」入口。
 * 顶部徽章显示 **DeepSeek 是否已配置**，未配置会明确提示。
 
 安全说明：控制台接口需要访问令牌（`?token=` 或 `X-Token` / `Authorization: Bearer`）。页面加载时会自动把地址里的 token 存入浏览器本地并从前端 URL 移除。若用 `--no-token` 关闭令牌，请务必用安全组 / 防火墙限制来源 IP，否则任何人都能用你的服务器跑任务。
+
+---
+
+## 服务鉴权与后台管理
+
+默认开启登录鉴权，用户分为**管理员**与**普通用户**：普通用户只能使用刷课控制台并受额度限制，
+管理员可以在后台管理用户、发卡密、看全部任务与费用。详细说明见
+[docs/admin.md](docs/admin.md)，这里只列要点：
+
+* **用户**：管理员创建，可设置角色、剩余额度、每日任务上限、并发上限、备注；可改密、禁用、删除。
+* **卡密**：单次 / 有限次数 / 无限次数三种，可绑定用户、设置到期时间；支持禁用、重置、批量生成。
+* **额度**：每启动一个任务扣 `credits_per_task` 次，任务最终失败自动退还；管理员额度不限。
+* **后台板块**：仪表盘、用户管理、卡密管理、任务管理、用量与费用、审计日志、系统设置。
+* **审计**：登录（含失败）、建号、发卡、兑换、扣费、退款、改设置都留痕（含 IP）。
+
+后台入口默认为 `/admin`，建议在配置里改成别人猜不到的路径：
+
+```yaml
+server:
+  auth_enabled: true
+  admin_path: /cx-admin-9f2       # 可自定义
+  admin_user: admin
+  admin_password: ""              # 留空则首次启动随机生成并打印
+```
+
+---
+
+## Token 用量与费用统计
+
+「刷一个账号花了多少钱」在后台「用量与费用」里看得到，粒度为：**每个任务 / 每个学习通账号 /
+每个用户 / 每天 / 每个模型**。
+
+计价口径（美元 / 1M tokens，默认值取自 DeepSeek 官方定价页）：
+
+```
+费用 = 缓存命中 tokens × 命中单价 + 缓存未命中 tokens × 未命中单价 + 输出 tokens × 输出单价
+```
+
+* 高峰价是非高峰价的 2 倍；高峰为 UTC 周一至周五 01:00-04:00 与 06:00-10:00（中国法定节假日除外）。
+* DeepSeek 返回的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 会被精确使用；
+  其它兼容接口没有这两个字段时，输入按"未命中"计（略高估，不会低估）。
+* 价格写在配置的 `pricing` 段，也可以在后台「系统设置 → 计费单价」直接改：
+
+```yaml
+pricing:
+  deepseek-flash:   { cache_hit: 0.006, cache_miss: 0.3,  output: 1.2 }
+  deepseek-v4-pro:  { cache_hit: 0.044, cache_miss: 1.32, output: 3.96 }
+```
+
+> 实现方式：`chaoxing_core` 每次调用大模型后回调一次，把接口返回的 `usage` 交给
+> `server/usage.py` 记账（见 `chaoxing_core/README.md` 的改动清单）。与官方账单的对账方法
+> 和允许的差异见 [docs/admin.md](docs/admin.md#五token-用量与费用是怎么算的)。
 
 ---
 
@@ -203,9 +260,12 @@ accounts:
 .
 ├── chaoxing_core/             # 内置超星核心（改造自 Samueli924/chaoxing，GPL-3.0）
 ├── server/
-│   ├── web.py                 # Flask 控制台：任务 API + SSE + 状态接口
+│   ├── web.py                 # Flask 主应用：登录、控制台、任务 API + SSE
+│   ├── auth.py                # 鉴权：用户/角色/额度/卡密/API Key/审计
+│   ├── admin.py               # 管理后台：用户/卡密/任务/用量/审计/设置
+│   ├── usage.py               # AI token 用量与费用统计（计价、聚合）
 │   ├── tasks.py               # 任务管理：子进程并行、输出捕获、日志与生命周期
-│   ├── templates/index.html   # 前端单页（账号录入 / 批量并行 / 实时终端）
+│   ├── templates/             # index.html（控制台）/ login.html / admin.html
 │   ├── runner.py              # 刷课编排（登录、章节队列、答题、签到、统计）
 │   ├── job.py                 # 单账号一次性运行（子进程入口）
 │   ├── scheduler.py           # 定时调度（APScheduler + 超时 + 重试）
@@ -221,6 +281,7 @@ accounts:
 │   ├── chaoxing-run@.service  # 手动触发单个账号
 │   └── Dockerfile + docker-compose.yml
 ├── tests/                     # 离线测试（含假超星服务）
+├── docs/admin.md              # 鉴权、后台、卡密与费用说明
 ├── docs/troubleshooting.md    # 常见问题排查
 ├── config.example.yaml
 └── requirements.txt

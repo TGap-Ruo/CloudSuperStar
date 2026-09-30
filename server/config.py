@@ -125,6 +125,35 @@ def _as_list(value: Any) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def _normalize_path(path: str) -> str:
+    """后台路径规范化：以 / 开头、不以 / 结尾。"""
+    path = (path or "/admin").strip() or "/admin"
+    if not path.startswith("/"):
+        path = "/" + path
+    if len(path) > 1:
+        path = path.rstrip("/")
+    return path
+
+
+def _parse_pricing(raw: Any) -> dict[str, dict[str, float]]:
+    """解析配置里的定价表（美元 / 1M tokens）：{模型: {cache_hit, cache_miss, output}}。"""
+    if not isinstance(raw, dict):
+        return {}
+    pricing: dict[str, dict[str, float]] = {}
+    for model, price in raw.items():
+        if not isinstance(price, dict):
+            continue
+        entry: dict[str, float] = {}
+        for key in ("cache_hit", "cache_miss", "output", "input"):
+            if key in price:
+                entry[key] = _as_float(price.get(key), 0.0)
+        if "input" in entry and "cache_miss" not in entry:
+            entry["cache_miss"] = entry["input"]
+        if entry:
+            pricing[str(model).strip().lower()] = entry
+    return pricing
+
+
 @dataclass
 class ProviderConfig:
     """单个题库/AI provider 的配置。"""
@@ -292,6 +321,15 @@ class ServerSettings:
     web_port: int = 8765
     web_token: str = ""
     web_max_parallel_tasks: int = 8
+    # ── 鉴权与计费 ──
+    auth_enabled: bool = True
+    admin_path: str = "/admin"
+    admin_user: str = "admin"
+    admin_password: str = ""
+    session_timeout_minutes: int = 720
+    credits_per_task: int = 1
+    refund_on_failure: bool = True
+    usd_to_cny: float = 7.2
 
 
 @dataclass
@@ -302,6 +340,7 @@ class ServerConfig:
     notify: NotifyConfig
     accounts: list[AccountConfig]
     source_path: Path | None = None
+    pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def enabled_accounts(self) -> list[AccountConfig]:
         return [acc for acc in self.accounts if acc.enabled]
@@ -482,6 +521,14 @@ def load_config(path: str | os.PathLike, *, strict: bool = True) -> ServerConfig
         web_port=_as_int(server_raw.get("web_port"), 8765),
         web_token=str(server_raw.get("web_token", "") or ""),
         web_max_parallel_tasks=max(1, _as_int(server_raw.get("web_max_parallel_tasks"), 8)),
+        auth_enabled=_as_bool(server_raw.get("auth_enabled", True)),
+        admin_path=_normalize_path(str(server_raw.get("admin_path", "/admin") or "/admin")),
+        admin_user=str(server_raw.get("admin_user", "admin") or "admin").strip() or "admin",
+        admin_password=str(server_raw.get("admin_password", "") or ""),
+        session_timeout_minutes=max(10, _as_int(server_raw.get("session_timeout_minutes"), 720)),
+        credits_per_task=max(1, _as_int(server_raw.get("credits_per_task"), 1)),
+        refund_on_failure=_as_bool(server_raw.get("refund_on_failure", True)),
+        usd_to_cny=_as_float(server_raw.get("usd_to_cny"), 7.2),
     )
     if server.data_dir:
         data_dir_path = Path(server.data_dir).expanduser()
@@ -532,6 +579,7 @@ def load_config(path: str | os.PathLike, *, strict: bool = True) -> ServerConfig
         notify=default_notify,
         accounts=accounts,
         source_path=config_path,
+        pricing=_parse_pricing(raw.get("pricing")),
     )
 
     if strict:

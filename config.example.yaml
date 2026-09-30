@@ -29,6 +29,38 @@ server:
   # 网页端同时运行的任务数上限（多账号并行）
   web_max_parallel_tasks: 8
 
+  # ── 服务鉴权与额度 ──────────────────────────────────────────────
+  # 开启后必须登录才能使用控制台；用户由管理员在后台创建
+  auth_enabled: true
+  # 管理后台入口（建议改成别人猜不到的路径，例如 /cx-admin-9f2）
+  admin_path: /admin
+  # 初始管理员账号；密码留空则首次启动时随机生成
+  # （会写入 data/initial_admin_password.txt，并在日志/部署输出里打印一次）
+  admin_user: admin
+  admin_password: ""
+  # 登录有效期（分钟）
+  session_timeout_minutes: 720
+  # 每启动一个刷课任务扣除的额度次数
+  credits_per_task: 1
+  # 任务最终失败时自动退还额度
+  refund_on_failure: true
+  # 仅用于把美元费用折算成人民币展示
+  usd_to_cny: 7.2
+
+# --------------------------------------------------------------------------
+# AI 计费单价（美元 / 1M tokens，高峰价；非高峰自动打 5 折）
+# 默认值来自 DeepSeek 官方定价页，价格会变，可在管理后台「系统设置」里改
+# --------------------------------------------------------------------------
+pricing:
+  deepseek-flash:
+    cache_hit: 0.006
+    cache_miss: 0.3
+    output: 1.2
+  deepseek-v4-pro:
+    cache_hit: 0.044
+    cache_miss: 1.32
+    output: 3.96
+
 # --------------------------------------------------------------------------
 # 所有账号的默认学习参数，账号内可单独覆盖
 # --------------------------------------------------------------------------
@@ -67,7 +99,7 @@ answer:
     - type: AI
       base_url: https://api.deepseek.com/v1
       key: sk-替换成你自己的DeepSeek密钥
-      model: deepseek-chat
+      model: deepseek-flash
       min_interval_seconds: 3
       # http_proxy: http://127.0.0.1:7890
     # 可选：GO题题库（免费额度有限）
@@ -118,7 +150,7 @@ accounts:
     #     - type: AI
     #       base_url: https://api.deepseek.com/v1
     #       key: sk-xxx
-    #       model: deepseek-chat
+    #       model: deepseek-flash
 
     # 该账号的学习覆盖（不写则用全局 study 段）
     # study:

@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>管理后台 · 超星学习通自动化</title>
+<style>
+  :root { --bg:#f4f6fa; --card:#fff; --border:#e6e9f0; --text:#1f2430; --muted:#6b7280;
+          --primary:#2563eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+          --shadow:0 1px 3px rgba(16,24,40,.06); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1218; --card:#171b23; --border:#262c38; --text:#e6e9ef; --muted:#9aa3b2; }
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--text); font-size:14px; }
+  .layout { display:grid; grid-template-columns:210px 1fr; min-height:100vh; }
+  .side { background:var(--card); border-right:1px solid var(--border); padding:18px 12px; }
+  .brand { font-size:15px; font-weight:600; padding:6px 10px 16px; }
+  .brand .who { font-size:11.5px; color:var(--muted); font-weight:400; margin-top:4px; }
+  .nav a { display:block; padding:9px 12px; border-radius:8px; color:var(--muted);
+           text-decoration:none; font-size:13.5px; margin-bottom:2px; }
+  .nav a:hover { background:rgba(37,99,235,.07); color:var(--text); }
+  .nav a.active { background:rgba(37,99,235,.12); color:var(--primary); font-weight:600; }
+  .main { padding:22px 26px 60px; max-width:1400px; }
+  h2 { font-size:17px; margin-bottom:14px; }
+  h3 { font-size:14px; margin:18px 0 10px; color:var(--muted); font-weight:600; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px;
+          padding:14px 16px; box-shadow:var(--shadow); }
+  .card .k { font-size:12px; color:var(--muted); }
+  .card .v { font-size:22px; font-weight:600; margin-top:6px; }
+  .card .s { font-size:11.5px; color:var(--muted); margin-top:4px; }
+  .panel { background:var(--card); border:1px solid var(--border); border-radius:12px;
+           padding:16px 18px; margin-top:16px; box-shadow:var(--shadow); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--border); vertical-align:middle; }
+  th { color:var(--muted); font-size:12px; font-weight:600; white-space:nowrap; }
+  tr:hover td { background:rgba(127,127,127,.04); }
+  input, select, textarea { padding:8px 10px; border:1px solid var(--border); border-radius:8px;
+          font-size:13px; background:transparent; color:var(--text); outline:none; font-family:inherit; }
+  input:focus, select:focus { border-color:var(--primary); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .row > div { display:flex; flex-direction:column; gap:5px; }
+  .row label { font-size:11.5px; color:var(--muted); }
+  .btn { padding:8px 14px; border:none; border-radius:8px; font-size:13px; cursor:pointer;
+         background:var(--primary); color:#fff; font-family:inherit; }
+  .btn:hover { filter:brightness(.95); }
+  .btn-sm { padding:4px 9px; font-size:12px; border-radius:6px; }
+  .btn-ghost { background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .btn-danger { background:#fee2e2; color:#b91c1c; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; }
+  .pill.ok { background:rgba(22,163,74,.14); color:#15803d; }
+  .pill.bad { background:rgba(220,38,38,.14); color:#b91c1c; }
+  .pill.warn { background:rgba(217,119,6,.14); color:#b45309; }
+  .pill.muted { background:rgba(107,114,128,.16); color:#4b5563; }
+  .hint { font-size:12px; color:var(--muted); line-height:1.7; }
+  .empty { padding:24px; text-align:center; color:var(--muted); font-size:13px; }
+  .toast { position:fixed; right:20px; top:20px; z-index:99; padding:10px 15px; border-radius:9px;
+           background:#111827; color:#fff; font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.3); max-width:420px; }
+  .toast.error { background:#b91c1c; } .toast.ok { background:#15803d; }
+  .mono { font-family:ui-monospace,Menlo,monospace; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .hidden { display:none !important; }
+  .modal { position:fixed; inset:0; background:rgba(15,18,24,.55); display:flex; align-items:center;
+           justify-content:center; z-index:100; }
+  .modal .panel { width:520px; max-width:94vw; max-height:86vh; overflow:auto; margin:0; }
+  @media (max-width:860px) { .layout { grid-template-columns:1fr; } .side { border-right:none; border-bottom:1px solid var(--border); } }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <div class="brand">管理后台<div class="who">{{ username or '未登录' }}</div></div>
+    <nav class="nav" id="nav">
+      <a href="#dashboard" data-tab="dashboard">仪表盘</a>
+      <a href="#users" data-tab="users">用户管理</a>
+      <a href="#codes" data-tab="codes">卡密管理</a>
+      <a href="#tasks" data-tab="tasks">任务管理</a>
+      <a href="#usage" data-tab="usage">用量与费用</a>
+      <a href="#audit" data-tab="audit">审计日志</a>
+      <a href="#settings" data-tab="settings">系统设置</a>
+    </nav>
+    <div class="hint" style="padding:14px 10px">
+      <a href="/" style="color:var(--primary);text-decoration:none">← 返回刷课控制台</a><br>
+      <a href="/logout" style="color:var(--muted);text-decoration:none;display:inline-block;margin-top:8px">退出登录</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <section id="tab-dashboard">
+      <h2>仪表盘</h2>
+      <div class="cards" id="overviewCards"><div class="card"><div class="k">加载中…</div></div></div>
+      <div class="panel">
+        <h3>今日用量</h3>
+        <div class="cards" id="todayCards"></div>
+      </div>
+      <div class="panel">
+        <h3>最近任务</h3>
+        <div id="dashTasks" class="empty">加载中…</div>
+      </div>
+    </section>
+
+    <section id="tab-users" class="hidden">
+      <h2>用户管理</h2>
+      <div class="panel">
+        <h3>新建用户</h3>
+        <div class="row">
+          <div><label>用户名</label><input id="nu-username" placeholder="student1" style="width:130px"></div>
+          <div><label>密码（≥6 位）</label><input id="nu-password" placeholder="初始密码" style="width:130px"></div>
+          <div><label>角色</label><select id="nu-role"><option value="user">普通用户</option><option value="admin">管理员</option></select></div>
+          <div><label>刷课次数（-1 不限）</label><input id="nu-credits" type="number" value="0" style="width:120px"></div>
+          <div><label>每日任务上限（0 不限）</label><input id="nu-daily" type="number" value="0" style="width:120px"></div>
+          <div><label>并发上限（0 用默认）</label><input id="nu-parallel" type="number" value="0" style="width:120px"></div>
+          <div><label>备注</label><input id="nu-note" placeholder="选填" style="width:150px"></div>
+          <button class="btn" onclick="createUser()">创建</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="row" style="justify-content:space-between">
+          <h3 style="margin:0">用户列表</h3>
+          <div class="row">
+            <input id="userSearch" placeholder="搜索用户名/备注" style="width:180px">
+            <button class="btn btn-ghost btn-sm" onclick="loadUsers()">搜索</button>
+            <button class="btn btn-ghost btn-sm" onclick="loadUsers(true)">刷新</button>
+          </div>
+        </div>
+        <div id="usersTable" class="empty">加载中…</div>
+      </div>
+    </section>
+
+    <section id="tab-codes" class="hidden">
+      <h2>卡密管理</h2>
+      <div class="panel">
+        <h3>生成卡密</h3>
+        <div class="row">
+          <div><label>类型</label><select id="nc-type" onchange="onCodeTypeChange()">
+            <option value="single">单次授权</option>
+            <option value="limited">有限次数</option>
+            <option value="unlimited">无限次数</option>
+          </select></div>
+          <div><label>数量</label><input id="nc-count" type="number" value="1" style="width:90px"></div>
+          <div><label>每张兑换次数</label><input id="nc-credits" type="number" value="1" style="width:120px"></div>
+          <div id="nc-maxuses-wrap" class="hidden"><label>每张可用次数</label><input id="nc-maxuses" type="number" value="1" style="width:120px"></div>
+          <div><label>名称/归属</label><input id="nc-name" placeholder="XX学校-张三" style="width:160px"></div>
+          <div><label>到期时间</label><input id="nc-expires" placeholder="2026-12-31 或留空" style="width:160px"></div>
+          <div><label>绑定用户（选填）</label><input id="nc-bound" placeholder="用户名" style="width:130px"></div>
+          <button class="btn" onclick="createCodes()">生成</button>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          「每张兑换次数」= 用户输入卡密后获得多少次刷课额度；「每张可用次数」= 同一张卡能被兑换几次。
+        </div>
+      </div>
+      <div class="panel">
+        <div class="row" style="justify-content:space-between">
+          <h3 style="margin:0">卡密列表</h3>
+          <div class="row">
+            <input id="codeSearch" placeholder="搜索卡密/名称" style="width:180px">
+            <button class="btn btn-ghost btn-sm" onclick="loadCodes()">搜索</button>
+            <button class="btn btn-ghost btn-sm" onclick="loadCodes(true)">刷新</button>
+          </div>
+        </div>
+        <div id="codesTable" class="empty">加载中…</div>
+      </div>
+    </section>
+
+    <section id="tab-tasks" class="hidden">
+      <h2>任务管理</h2>
+      <div class="panel">
+        <div class="row" style="justify-content:space-between">
+          <h3 style="margin:0">全部任务（含每个任务的 AI 消耗）</h3>
+          <div class="row">
+            <button class="btn btn-ghost btn-sm" onclick="loadTasks()">刷新</button>
+          </div>
+        </div>
+        <div id="tasksTable" class="empty">加载中…</div>
+      </div>
+    </section>
+
+    <section id="tab-usage" class="hidden">
+      <h2>用量与费用</h2>
+      <div class="cards" id="usageCards"></div>
+      <div class="panel">
+        <h3>按账号</h3><div id="usageAccount" class="empty">加载中…</div>
+      </div>
+      <div class="panel">
+        <h3>按用户</h3><div id="usageUser" class="empty">加载中…</div>
+      </div>
+      <div class="panel">
+        <h3>按天</h3><div id="usageDay" class="empty">加载中…</div>
+      </div>
+      <div class="panel">
+        <h3>明细（最近 100 条）</h3><div id="usageRecent" class="empty">加载中…</div>
+      </div>
+    </section>
+
+    <section id="tab-audit" class="hidden">
+      <h2>审计日志</h2>
+      <div class="panel">
+        <div class="row" style="justify-content:space-between">
+          <h3 style="margin:0">登录 / 建号 / 发卡 / 扣费 / 退款等操作</h3>
+          <div class="row">
+            <input id="auditSearch" placeholder="搜索操作人或动作" style="width:200px">
+            <button class="btn btn-ghost btn-sm" onclick="loadAudit()">搜索</button>
+          </div>
+        </div>
+        <div id="auditTable" class="empty">加载中…</div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="hidden">
+      <h2>系统设置</h2>
+      <div class="panel">
+        <h3>DeepSeek / 大模型</h3>
+        <div class="row">
+          <div><label>API Base URL</label><input id="set-base" style="width:260px"></div>
+          <div><label>模型</label><input id="set-model" style="width:180px"></div>
+          <div><label>API Key（留空表示不改）</label><input id="set-key" placeholder="sk-…" style="width:260px"></div>
+        </div>
+        <div class="hint" style="margin-top:8px" id="set-key-hint"></div>
+      </div>
+      <div class="panel">
+        <h3>计费单价（美元 / 1M tokens，高峰价；非高峰自动打 5 折）</h3>
+        <div id="pricingEditor"></div>
+        <div class="hint" style="margin-top:8px">
+          按 DeepSeek 官方定价填写：缓存命中 / 缓存未命中 / 输出 三档。改完保存即写入 config.yaml。
+        </div>
+      </div>
+      <div class="panel">
+        <h3>刷课默认参数</h3>
+        <div class="row">
+          <div><label>视频倍速</label><input id="set-speed" type="number" step="0.1" min="1" max="2" style="width:110px"></div>
+          <div><label>并发章节数</label><input id="set-jobs" type="number" min="1" max="16" style="width:110px"></div>
+          <div><label>自动提交</label><select id="set-submit"><option value="true">是</option><option value="false">否</option></select></div>
+          <div><label>最低覆盖率</label><input id="set-cover" type="number" step="0.05" min="0" max="1" style="width:110px"></div>
+          <div><label>章节检测重做次数</label><input id="set-retries" type="number" min="0" max="10" style="width:130px"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>安全与计费</h3>
+        <div class="row">
+          <div><label>启用登录鉴权</label><select id="set-auth"><option value="true">开启</option><option value="false">关闭</option></select></div>
+          <div><label>每次任务扣减次数</label><input id="set-credits" type="number" min="1" style="width:130px"></div>
+          <div><label>失败自动退还</label><select id="set-refund"><option value="true">是</option><option value="false">否</option></select></div>
+          <div><label>同时运行任务上限</label><input id="set-parallel" type="number" min="1" style="width:140px"></div>
+          <div><label>美元→人民币汇率（仅展示）</label><input id="set-rate" type="number" step="0.01" style="width:150px"></div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn" onclick="saveSettings()">保存设置</button>
+          <span class="hint">保存后需重启服务生效：<code class="mono">systemctl restart chaoxing-web chaoxing-serve</code></span>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const BASE = "{{ base }}";
+const USD_TO_CNY = {{ usd_to_cny or 7.2 }};
+let USERS = [];
+let PRICING = {};
+
+function esc(text) {
+  return String(text === null || text === undefined ? '' : text).replace(/[&<>"']/g,
+    function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+}
+function toast(message, type) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type === 'error' ? 'error' : type === 'ok' ? 'ok' : '');
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(function () { el.remove(); }, 3600);
+}
+function money(usd) {
+  const value = Number(usd || 0);
+  const cny = value * USD_TO_CNY;
+  return '$' + value.toFixed(6) + '（约 ¥' + cny.toFixed(4) + '）';
+}
+function num(value) {
+  return Number(value || 0).toLocaleString('zh-CN');
+}
+async function api(path, options) {
+  const opts = Object.assign({ headers: {} }, options || {});
+  if (opts.body && !opts.headers['Content-Type']) opts.headers['Content-Type'] = 'application/json';
+  const resp = await fetch(BASE + path, opts);
+  if (resp.status === 401) { location.href = '/login'; throw new Error('需要登录'); }
+  const text = await resp.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = { error: text }; }
+  if (!resp.ok || (data && data.ok === false)) {
+    throw new Error((data && (data.error || data.message)) || ('HTTP ' + resp.status));
+  }
+  return data || {};
+}
+
+/* ───────────── 路由 ───────────── */
+const TABS = ['dashboard', 'users', 'codes', 'tasks', 'usage', 'audit', 'settings'];
+function showTab(name) {
+  if (TABS.indexOf(name) < 0) name = 'dashboard';
+  TABS.forEach(function (tab) {
+    document.getElementById('tab-' + tab).classList.toggle('hidden', tab !== name);
+  });
+  document.querySelectorAll('#nav a').forEach(function (a) {
+    a.classList.toggle('active', a.dataset.tab === name);
+  });
+  if (name === 'dashboard') loadDashboard();
+  if (name === 'users') loadUsers();
+  if (name === 'codes') loadCodes();
+  if (name === 'tasks') loadTasks();
+  if (name === 'usage') loadUsage();
+  if (name === 'audit') loadAudit();
+  if (name === 'settings') loadSettings();
+}
+
+/* ───────────── 仪表盘 ───────────── */
+async function loadDashboard() {
+  try {
+    const data = await api('/api/overview');
+    const tasks = data.tasks || {};
+    const usage = data.usage || {};
+    const auth = data.auth || {};
+    const users = auth.users || {};
+    const codes = auth.codes || {};
+    document.getElementById('overviewCards').innerHTML = [
+      card('用户', num(users.total), '启用 ' + num(users.enabled) + ' · 管理员 ' + num(users.admins)),
+      card('卡密', num(codes.total), '已核销 ' + num(codes.used) + ' 次'),
+      card('任务', num(tasks.total), '运行 ' + num(tasks.running) + ' · 成功 ' + num(tasks.finished) + ' · 失败 ' + num(tasks.failed)),
+      card('累计 AI 费用', money((usage.all || {}).cost), num((usage.all || {}).total_tokens) + ' tokens'),
+      card('今日 AI 费用', money((usage.today || {}).cost), num((usage.today || {}).calls) + ' 次调用'),
+      card('DeepSeek', data.deepseek && data.deepseek.configured ? '已配置' : '未配置',
+           (data.deepseek || {}).model || ''),
+    ].join('');
+    const today = usage.today || {};
+    document.getElementById('todayCards').innerHTML = [
+      card('调用次数', num(today.calls), ''),
+      card('输入 tokens', num(today.prompt_tokens), '其中缓存命中 ' + num(today.cache_hit_tokens)),
+      card('输出 tokens', num(today.output_tokens), ''),
+      card('今日费用', money(today.cost), '按当前定价估算'),
+    ].join('');
+    const list = (data.recent_tasks || []);
+    document.getElementById('dashTasks').innerHTML = list.length ? taskTable(list, false) : '<div class="empty">暂无任务</div>';
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function card(key, value, sub) {
+  return '<div class="card"><div class="k">' + esc(key) + '</div><div class="v">' + esc(value) +
+    '</div><div class="s">' + esc(sub || '') + '</div></div>';
+}
+
+/* ───────────── 用户 ───────────── */
+async function loadUsers(silent) {
+  try {
+    const keyword = document.getElementById('userSearch').value.trim();
+    const data = await api('/api/users' + (keyword ? '?q=' + encodeURIComponent(keyword) : ''));
+    USERS = data.users || [];
+    const box = document.getElementById('usersTable');
+    if (!USERS.length) { box.innerHTML = '<div class="empty">暂无用户</div>'; return; }
+    box.innerHTML = '<table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>剩余额度</th>' +
+      '<th>今日/上限</th><th>并发</th><th>累计费用</th><th>最后登录</th><th>操作</th></tr></thead><tbody>' +
+      USERS.map(function (u) {
+        const usage = u.usage || {};
+        return '<tr>' +
+          '<td><b>' + esc(u.username) + '</b><div class="hint">' + esc(u.note || '') + '</div></td>' +
+          '<td>' + (u.role === 'admin' ? '<span class="pill warn">管理员</span>' : '<span class="pill muted">用户</span>') + '</td>' +
+          '<td>' + (u.enabled ? '<span class="pill ok">启用</span>' : '<span class="pill bad">禁用</span>') + '</td>' +
+          '<td>' + esc(u.unlimited ? '不限' : (u.credits + ' 次')) + '</td>' +
+          '<td>' + num(u.used_today) + ' / ' + (u.daily_task_limit ? num(u.daily_task_limit) : '不限') + '</td>' +
+          '<td>' + (u.max_parallel ? num(u.max_parallel) : '默认') + '</td>' +
+          '<td>' + money(usage.cost) + '<div class="hint">' + num(usage.total_tokens) + ' tokens</div></td>' +
+          '<td class="hint">' + esc(u.last_login_at || '-') + '</td>' +
+          '<td><div class="actions">' +
+            '<button class="btn btn-ghost btn-sm" onclick="editUser(\'' + esc(u.username) + '\')">编辑</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="resetPassword(\'' + esc(u.username) + '\')">改密</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="createApiKey(\'' + esc(u.username) + '\')">API Key</button>' +
+            '<button class="btn btn-danger btn-sm" onclick="deleteUser(\'' + esc(u.username) + '\')">删除</button>' +
+          '</div></td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (err) { if (!silent) toast(err.message, 'error'); }
+}
+
+async function createUser() {
+  const payload = {
+    username: document.getElementById('nu-username').value.trim(),
+    password: document.getElementById('nu-password').value,
+    role: document.getElementById('nu-role').value,
+    credits: parseInt(document.getElementById('nu-credits').value || '0', 10),
+    daily_task_limit: parseInt(document.getElementById('nu-daily').value || '0', 10),
+    max_parallel: parseInt(document.getElementById('nu-parallel').value || '0', 10),
+    note: document.getElementById('nu-note').value.trim()
+  };
+  if (!payload.username || !payload.password) { toast('请填写用户名和密码', 'error'); return; }
+  try {
+    await api('/api/users', { method: 'POST', body: JSON.stringify(payload) });
+    toast('用户已创建', 'ok');
+    document.getElementById('nu-username').value = '';
+    document.getElementById('nu-password').value = '';
+    loadUsers(true);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function editUser(username) {
+  const user = USERS.filter(function (u) { return u.username === username; })[0];
+  if (!user) return;
+  openModal('编辑用户 ' + username,
+    '<div class="row">' +
+    '<div><label>剩余额度（-1=不限）</label><input id="eu-credits" type="number" value="' + user.credits + '" style="width:150px"></div>' +
+    '<div><label>每日任务上限（0=不限）</label><input id="eu-daily" type="number" value="' + user.daily_task_limit + '" style="width:150px"></div>' +
+    '<div><label>并发上限（0=默认）</label><input id="eu-parallel" type="number" value="' + user.max_parallel + '" style="width:150px"></div>' +
+    '<div><label>角色</label><select id="eu-role"><option value="user"' + (user.role === 'user' ? ' selected' : '') + '>普通用户</option>' +
+    '<option value="admin"' + (user.role === 'admin' ? ' selected' : '') + '>管理员</option></select></div>' +
+    '<div><label>状态</label><select id="eu-enabled"><option value="true"' + (user.enabled ? ' selected' : '') + '>启用</option>' +
+    '<option value="false"' + (!user.enabled ? ' selected' : '') + '>禁用</option></select></div>' +
+    '<div><label>备注</label><input id="eu-note" value="' + esc(user.note || '') + '" style="width:220px"></div>' +
+    '</div>',
+    '保存', async function () {
+      await api('/api/users/' + encodeURIComponent(username), {
+        method: 'PATCH',
+        body: JSON.stringify({
+          credits: parseInt(document.getElementById('eu-credits').value || '0', 10),
+          daily_task_limit: parseInt(document.getElementById('eu-daily').value || '0', 10),
+          max_parallel: parseInt(document.getElementById('eu-parallel').value || '0', 10),
+          role: document.getElementById('eu-role').value,
+          enabled: document.getElementById('eu-enabled').value === 'true',
+          note: document.getElementById('eu-note').value.trim()
+        })
+      });
+      toast('已保存', 'ok');
+      loadUsers(true);
+    });
+}
+
+async function resetPassword(username) {
+  const password = prompt('为用户 ' + username + ' 设置新密码（≥6 位）：');
+  if (!password) return;
+  try {
+    await api('/api/users/' + encodeURIComponent(username) + '/password',
+      { method: 'POST', body: JSON.stringify({ password: password }) });
+    toast('密码已更新', 'ok');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function createApiKey(username) {
+  try {
+    const data = await api('/api/users/' + encodeURIComponent(username) + '/api-key',
+      { method: 'POST', body: JSON.stringify({ name: 'web' }) });
+    openModal('API Key（只显示一次）',
+      '<div class="hint">把这个 Key 放到请求头 <code>X-Api-Key</code> 即可免登录调用接口。</div>' +
+      '<div class="mono" style="margin-top:10px;word-break:break-all;font-size:13px">' + esc(data.key) + '</div>',
+      '我知道了', async function () {});
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deleteUser(username) {
+  if (!confirm('确定删除用户 ' + username + ' 吗？该操作不可恢复。')) return;
+  try {
+    await api('/api/users/' + encodeURIComponent(username), { method: 'DELETE' });
+    toast('已删除', 'ok');
+    loadUsers(true);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/* ───────────── 卡密 ───────────── */
+function onCodeTypeChange() {
+  const type = document.getElementById('nc-type').value;
+  document.getElementById('nc-maxuses-wrap').classList.toggle('hidden', type !== 'limited');
+}
+
+async function createCodes() {
+  const payload = {
+    type: document.getElementById('nc-type').value,
+    count: parseInt(document.getElementById('nc-count').value || '1', 10),
+    credits: parseInt(document.getElementById('nc-credits').value || '1', 10),
+    max_uses: parseInt(document.getElementById('nc-maxuses').value || '1', 10),
+    name: document.getElementById('nc-name').value.trim(),
+    expires_at: document.getElementById('nc-expires').value.trim(),
+    bound_user: document.getElementById('nc-bound').value.trim()
+  };
+  try {
+    const data = await api('/api/codes', { method: 'POST', body: JSON.stringify(payload) });
+    const codes = data.codes || [];
+    openModal('已生成 ' + codes.length + ' 张卡密',
+      '<div class="hint">点击下方文本框可全选复制。</div>' +
+      '<textarea readonly style="width:100%;height:160px;margin-top:10px;font-family:ui-monospace,monospace">' +
+      esc(codes.join('\n')) + '</textarea>',
+      '复制并关闭', async function () { copyText(codes.join('\n')); });
+    loadCodes(true);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function copyText(text) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(function () { toast('已复制', 'ok'); },
+      function () { toast('复制失败，请手动选中复制', 'error'); });
+  } else { toast('请手动选中复制', 'error'); }
+}
+
+async function loadCodes(silent) {
+  try {
+    const keyword = document.getElementById('codeSearch').value.trim();
+    const data = await api('/api/codes' + (keyword ? '?q=' + encodeURIComponent(keyword) : ''));
+    const codes = data.codes || [];
+    const box = document.getElementById('codesTable');
+    if (!codes.length) { box.innerHTML = '<div class="empty">暂无卡密</div>'; return; }
+    box.innerHTML = '<table><thead><tr><th>卡密</th><th>类型</th><th>名称</th><th>兑换额度</th>' +
+      '<th>已用/上限</th><th>绑定</th><th>到期</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
+      codes.map(function (c) {
+        return '<tr>' +
+          '<td class="mono"><b>' + esc(c.code) + '</b></td>' +
+          '<td>' + esc(c.type_label) + '</td>' +
+          '<td>' + esc(c.name || '-') + '</td>' +
+          '<td>' + num(c.credits) + ' 次</td>' +
+          '<td>' + num(c.used_count) + ' / ' + (c.type === 'unlimited' ? '∞' : num(c.max_uses)) + '</td>' +
+          '<td>' + esc(c.bound_user || '-') + '</td>' +
+          '<td class="hint">' + esc(c.expires_at || '长期') + '</td>' +
+          '<td>' + (c.enabled ? '<span class="pill ok">启用</span>' : '<span class="pill bad">禁用</span>') +
+            (c.expired ? ' <span class="pill warn">已过期</span>' : '') + '</td>' +
+          '<td><div class="actions">' +
+            '<button class="btn btn-ghost btn-sm" onclick="copyText(\'' + esc(c.code) + '\')">复制</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="toggleCode(\'' + esc(c.code) + '\',' + (!c.enabled) + ')">' +
+              (c.enabled ? '禁用' : '启用') + '</button>' +
+            '<button class="btn btn-ghost btn-sm" onclick="resetCode(\'' + esc(c.code) + '\')">重置</button>' +
+            '<button class="btn btn-danger btn-sm" onclick="deleteCode(\'' + esc(c.code) + '\')">删除</button>' +
+          '</div></td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (err) { if (!silent) toast(err.message, 'error'); }
+}
+
+async function toggleCode(code, enabled) {
+  try {
+    await api('/api/codes/' + encodeURIComponent(code) + '/toggle',
+      { method: 'POST', body: JSON.stringify({ enabled: enabled }) });
+    loadCodes(true);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function resetCode(code) {
+  if (!confirm('把卡密 ' + code + ' 的已用次数清零？')) return;
+  try {
+    await api('/api/codes/' + encodeURIComponent(code) + '/reset', { method: 'POST' });
+    toast('已重置', 'ok');
+    loadCodes(true);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deleteCode(code) {
+  if (!confirm('确定删除卡密 ' + code + ' 吗？')) return;
+  try {
+    await api('/api/codes/' + encodeURIComponent(code), { method: 'DELETE' });
+    toast('已删除', 'ok');
+    loadCodes(true);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/* ───────────── 任务 ───────────── */
+const TASK_LABEL = { selecting: '选择课程中', running: '运行中', finished: '已完成', failed: '失败', stopped: '已停止' };
+
+function taskTable(tasks, withActions) {
+  return '<table><thead><tr><th>任务</th><th>用户</th><th>学习通账号</th><th>状态</th><th>章节</th>' +
+    '<th>AI 消耗</th><th>创建时间</th>' + (withActions ? '<th>操作</th>' : '') + '</tr></thead><tbody>' +
+    tasks.map(function (t) {
+      const usage = t.usage || {};
+      const summary = t.summary || {};
+      return '<tr>' +
+        '<td class="mono">' + esc(t.id) + '</td>' +
+        '<td>' + esc(t.owner || '-') + '</td>' +
+        '<td>' + esc(t.display_name || t.username) + '</td>' +
+        '<td><span class="pill ' + (t.status === 'finished' ? 'ok' : t.status === 'failed' ? 'bad' : 'muted') + '">' +
+          esc(TASK_LABEL[t.status] || t.status) + '</span></td>' +
+        '<td>' + num(summary.chapters_finished) + '/' + num(summary.chapters_total) + '</td>' +
+        '<td>' + num(usage.total_tokens) + ' tokens<div class="hint">' + money(usage.cost) + '</div></td>' +
+        '<td class="hint">' + esc(t.created_at || '') + '</td>' +
+        (withActions ? '<td><div class="actions">' +
+          (t.status === 'running'
+            ? '<button class="btn btn-ghost btn-sm" onclick="stopTask(\'' + t.id + '\')">停止</button>' : '') +
+          '<a class="btn btn-ghost btn-sm" href="' + BASE + '/api/tasks/' + t.id + '/log">日志</a>' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteTask(\'' + t.id + '\')">删除</button>' +
+        '</div></td>' : '') +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+async function loadTasks() {
+  try {
+    const data = await api('/api/tasks?limit=200');
+    const tasks = data.tasks || [];
+    document.getElementById('tasksTable').innerHTML = tasks.length
+      ? taskTable(tasks, true) : '<div class="empty">暂无任务</div>';
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function stopTask(taskId) {
+  try {
+    await api('/api/tasks/' + taskId + '/stop', { method: 'POST' });
+    toast('已发送停止信号', 'ok');
+    loadTasks();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deleteTask(taskId) {
+  if (!confirm('删除任务 ' + taskId + ' 及其日志？')) return;
+  try {
+    await api('/api/tasks/' + taskId, { method: 'DELETE' });
+    toast('已删除', 'ok');
+    loadTasks();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/* ───────────── 用量与费用 ───────────── */
+async function loadUsage() {
+  try {
+    const data = await api('/api/usage?days=30');
+    const totals = (data.totals || {}).all || {};
+    const range = (data.totals || {}).range || {};
+    document.getElementById('usageCards').innerHTML = [
+      card('累计调用', num(totals.calls), ''),
+      card('累计 tokens', num(totals.total_tokens),
+        '输入 ' + num(totals.prompt_tokens) + ' · 输出 ' + num(totals.output_tokens)),
+      card('缓存命中 tokens', num(totals.cache_hit_tokens), '命中比越高越省钱'),
+      card('累计费用', money(totals.cost), '近 30 天 ' + money(range.cost)),
+    ].join('');
+    const groups = data.groups || {};
+    document.getElementById('usageAccount').innerHTML = groupTable(groups.account || [], '账号');
+    document.getElementById('usageUser').innerHTML = groupTable(groups.user || [], '用户');
+    document.getElementById('usageDay').innerHTML = groupTable(groups.day || [], '日期');
+    const rows = data.recent || [];
+    document.getElementById('usageRecent').innerHTML = rows.length
+      ? '<table><thead><tr><th>时间(UTC)</th><th>用户</th><th>账号</th><th>模型</th><th>输入</th>' +
+        '<th>命中</th><th>输出</th><th>合计</th><th>费用</th></tr></thead><tbody>' +
+        rows.map(function (r) {
+          return '<tr><td class="hint">' + esc(String(r.at || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+            '<td>' + esc(r.user || '-') + '</td><td class="mono">' + esc(r.account || '-') + '</td>' +
+            '<td>' + esc(r.model || '') + '</td>' +
+            '<td>' + num(r.prompt_tokens) + '</td><td>' + num(r.cache_hit_tokens) + '</td>' +
+            '<td>' + num(r.output_tokens) + '</td><td>' + num(r.total_tokens) + '</td>' +
+            '<td>' + money(r.cost) + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty">暂无用量记录（运行一次需要 AI 答题的任务就有了）</div>';
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function groupTable(rows, label) {
+  if (!rows.length) return '<div class="empty">暂无数据</div>';
+  return '<table><thead><tr><th>' + label + '</th><th>调用</th><th>tokens</th><th>输出</th><th>费用</th></tr></thead><tbody>' +
+    rows.map(function (r) {
+      return '<tr><td>' + esc(r.name || '(空)') + '</td><td>' + num(r.calls) + '</td>' +
+        '<td>' + num(r.total_tokens) + '</td><td>' + num(r.output_tokens) + '</td>' +
+        '<td>' + money(r.cost) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+/* ───────────── 审计 ───────────── */
+async function loadAudit() {
+  try {
+    const keyword = document.getElementById('auditSearch').value.trim();
+    const data = await api('/api/audit' + (keyword ? '?q=' + encodeURIComponent(keyword) : ''));
+    const logs = data.logs || [];
+    document.getElementById('auditTable').innerHTML = logs.length
+      ? '<table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>详情</th><th>IP</th></tr></thead><tbody>' +
+        logs.map(function (l) {
+          return '<tr><td class="hint">' + esc(l.at) + '</td><td>' + esc(l.actor || '-') + '</td>' +
+            '<td><span class="pill muted">' + esc(l.action) + '</span></td>' +
+            '<td class="mono">' + esc(l.target || '-') + '</td>' +
+            '<td class="hint">' + esc(String(l.detail || '').slice(0, 80)) + '</td>' +
+            '<td class="hint">' + esc(l.ip || '-') + '</td></tr>';
+        }).join('') + '</tbody></table>'
+      : '<div class="empty">暂无日志</div>';
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/* ───────────── 设置 ───────────── */
+async function loadSettings() {
+  try {
+    const data = await api('/api/settings');
+    const deepseek = data.deepseek || {};
+    document.getElementById('set-base').value = deepseek.base_url || 'https://api.deepseek.com/v1';
+    document.getElementById('set-model').value = deepseek.model || 'deepseek-flash';
+    document.getElementById('set-key-hint').textContent = deepseek.configured
+      ? ('当前 Key：' + (deepseek.key_masked || '已配置') + '（留空表示不修改）')
+      : '当前未配置 API Key，填一个即可开启自动答题。';
+    PRICING = data.pricing || {};
+    renderPricing();
+    const study = data.study || {};
+    document.getElementById('set-speed').value = study.speed;
+    document.getElementById('set-jobs').value = study.jobs;
+    document.getElementById('set-submit').value = study.submit ? 'true' : 'false';
+    document.getElementById('set-cover').value = study.cover_rate;
+    document.getElementById('set-retries').value = study.work_max_retries;
+    const security = data.security || {};
+    document.getElementById('set-auth').value = security.auth_enabled ? 'true' : 'false';
+    document.getElementById('set-credits').value = security.credits_per_task;
+    document.getElementById('set-refund').value = security.refund_on_failure ? 'true' : 'false';
+    document.getElementById('set-parallel').value = security.web_max_parallel_tasks;
+    document.getElementById('set-rate').value = security.usd_to_cny;
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function renderPricing() {
+  const models = Object.keys(PRICING).filter(function (m) { return m !== '__default__'; });
+  document.getElementById('pricingEditor').innerHTML =
+    '<table><thead><tr><th>模型</th><th>缓存命中</th><th>缓存未命中</th><th>输出</th></tr></thead><tbody>' +
+    models.map(function (model) {
+      const price = PRICING[model] || {};
+      return '<tr><td class="mono">' + esc(model) + '</td>' +
+        '<td><input type="number" step="0.0001" style="width:110px" data-model="' + esc(model) + '" data-field="cache_hit" value="' + (price.cache_hit || 0) + '"></td>' +
+        '<td><input type="number" step="0.0001" style="width:110px" data-model="' + esc(model) + '" data-field="cache_miss" value="' + (price.cache_miss || 0) + '"></td>' +
+        '<td><input type="number" step="0.0001" style="width:110px" data-model="' + esc(model) + '" data-field="output" value="' + (price.output || 0) + '"></td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+async function saveSettings() {
+  const pricing = {};
+  document.querySelectorAll('#pricingEditor input').forEach(function (input) {
+    const model = input.dataset.model;
+    pricing[model] = pricing[model] || {};
+    pricing[model][input.dataset.field] = parseFloat(input.value || '0');
+  });
+  const payload = {
+    deepseek_key: document.getElementById('set-key').value.trim(),
+    deepseek_base_url: document.getElementById('set-base').value.trim(),
+    deepseek_model: document.getElementById('set-model').value.trim(),
+    pricing: pricing,
+    study: {
+      speed: parseFloat(document.getElementById('set-speed').value || '1'),
+      jobs: parseInt(document.getElementById('set-jobs').value || '4', 10),
+      submit: document.getElementById('set-submit').value === 'true',
+      cover_rate: parseFloat(document.getElementById('set-cover').value || '0.6'),
+      work_max_retries: parseInt(document.getElementById('set-retries').value || '3', 10)
+    },
+    security: {
+      auth_enabled: document.getElementById('set-auth').value === 'true',
+      credits_per_task: parseInt(document.getElementById('set-credits').value || '1', 10),
+      refund_on_failure: document.getElementById('set-refund').value === 'true',
+      web_max_parallel_tasks: parseInt(document.getElementById('set-parallel').value || '8', 10),
+      usd_to_cny: parseFloat(document.getElementById('set-rate').value || '7.2')
+    }
+  };
+  try {
+    const data = await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
+    toast(data.message || '已保存', 'ok');
+    document.getElementById('set-key').value = '';
+    loadSettings();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+/* ───────────── 弹窗 ───────────── */
+let modalConfirm = null;
+function openModal(title, bodyHtml, okText, onOk) {
+  modalConfirm = onOk;
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.id = 'adminModal';
+  modal.innerHTML = '<div class="panel"><h3>' + esc(title) + '</h3>' + bodyHtml +
+    '<div class="row" style="margin-top:14px">' +
+    '<button class="btn" onclick="confirmModal()">' + esc(okText || '确定') + '</button>' +
+    '<button class="btn btn-ghost" onclick="closeModal()">关闭</button></div></div>';
+  document.body.appendChild(modal);
+}
+function closeModal() {
+  const modal = document.getElementById('adminModal');
+  if (modal) modal.remove();
+  modalConfirm = null;
+}
+async function confirmModal() {
+  const handler = modalConfirm;
+  closeModal();
+  if (handler) {
+    try { await handler(); } catch (err) { toast(err.message, 'error'); }
+  }
+}
+
+/* ───────────── 启动 ───────────── */
+window.addEventListener('hashchange', function () { showTab(location.hash.slice(1)); });
+showTab(location.hash.slice(1) || 'dashboard');
+</script>
+</body>
+</html>
