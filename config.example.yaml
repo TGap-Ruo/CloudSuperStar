@@ -104,6 +104,9 @@ answer:
       key: sk-替换成你自己的DeepSeek密钥
       model: deepseek-flash
       min_interval_seconds: 3
+      # 图片题（超星"资料题"，题干只有一张图）是否交给多模态模型识别
+      # deepseek-flash 支持图像理解；deepseek-v4-pro 不支持（会自动按文本处理）
+      vision: true
       # http_proxy: http://127.0.0.1:7890
     # 可选：GO题题库（免费额度有限）
     # - type: TikuGo

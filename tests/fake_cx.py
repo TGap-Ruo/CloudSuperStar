@@ -224,6 +224,8 @@ class FakeChaoxing:
     work_submit_fail_times: int = 0  # 前 N 次提交故意失败，用于测试重试
     video_already_passed: bool = True
     work_graded: bool = False        # 题目页已是「已批阅」状态（不可再作答）
+    video_status_failed: bool = False  # 视频状态接口返回 failed（资源下架/课程结课）
+    work_expired: bool = False         # 提交作业时返回「此作业已过期！」
     recorded: dict[str, Any] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
     extra_routes: dict[str, Callable[[requests.PreparedRequest], requests.Response]] = field(
@@ -263,6 +265,8 @@ class FakeChaoxing:
             return make_response(request, text="<html><body></body></html>")
 
         if path.startswith("/ananas/status/"):
+            if self.video_status_failed:
+                return make_response(request, json_data={"status": "failed"})
             return make_response(
                 request,
                 json_data={
@@ -307,6 +311,10 @@ class FakeChaoxing:
             self.recorded["work_submit_count"] = (
                 self.recorded.get("work_submit_count", 0) + 1
             )
+            if self.work_expired:
+                return make_response(
+                    request, json_data={"status": False, "msg": "此作业已过期！"}
+                )
             return make_response(
                 request,
                 json_data={

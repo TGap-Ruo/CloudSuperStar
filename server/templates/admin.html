@@ -219,6 +219,10 @@
           <div><label>API Base URL</label><input id="set-base" style="width:260px"></div>
           <div><label>模型</label><input id="set-model" style="width:180px"></div>
           <div><label>API Key（留空表示不改）</label><input id="set-key" placeholder="sk-…" style="width:260px"></div>
+          <div><label>图片题（多模态识别）</label><select id="set-vision">
+            <option value="true">开启（deepseek-flash 可看图答题）</option>
+            <option value="false">关闭（只看文字）</option>
+          </select></div>
         </div>
         <div class="hint" style="margin-top:8px" id="set-key-hint"></div>
       </div>
@@ -699,6 +703,7 @@ async function loadSettings() {
     const deepseek = data.deepseek || {};
     document.getElementById('set-base').value = deepseek.base_url || 'https://api.deepseek.com/v1';
     document.getElementById('set-model').value = deepseek.model || 'deepseek-flash';
+    document.getElementById('set-vision').value = deepseek.vision === false ? 'false' : 'true';
     document.getElementById('set-key-hint').textContent = deepseek.configured
       ? ('当前 Key：' + (deepseek.key_masked || '已配置') + '（留空表示不修改）')
       : '当前未配置 API Key，填一个即可开启自动答题。';
@@ -744,6 +749,7 @@ async function saveSettings() {
     deepseek_key: document.getElementById('set-key').value.trim(),
     deepseek_base_url: document.getElementById('set-base').value.trim(),
     deepseek_model: document.getElementById('set-model').value.trim(),
+    deepseek_vision: document.getElementById('set-vision').value === 'true',
     pricing: pricing,
     study: {
       speed: parseFloat(document.getElementById('set-speed').value || '1'),

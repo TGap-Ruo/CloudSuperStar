@@ -121,12 +121,30 @@ class StudyResult(Enum):
     FORBIDDEN = 1  # 403
     ERROR = 2
     TIMEOUT = 3
+    SKIPPED = 4  # 平台侧不可完成（作业过期、资源下架等），重试无意义
 
     def is_success(self):
         return self == StudyResult.SUCCESS
 
     def is_failure(self):
-        return self != StudyResult.SUCCESS
+        # SKIPPED 不算失败：重试也不会成功，避免把已结课的章节反复重试并标记失败
+        return self not in (StudyResult.SUCCESS, StudyResult.SKIPPED)
+
+    def is_skipped(self):
+        return self == StudyResult.SKIPPED
+
+
+# 平台明确拒绝提交时的提示词：出现这些说明重试没有意义
+WORK_UNAVAILABLE_HINTS = (
+    "已过期",
+    "已结束",
+    "已截止",
+    "已关闭",
+    "未开放",
+    "已完成",
+    "已经提交",
+    "已提交",
+)
 
 
 class WorkNotAnswerable(Exception):
@@ -488,6 +506,12 @@ def judge_work_detail(
         }
 
     if score is not None and score < 100:
+        if score <= 0 and not explicit_right:
+            # 实测：刚提交完、平台还没批阅（或成绩尚未生成）时会出现"成绩 0 分、
+            # 页面上没有任何对错标记"。这种状态无法判断对错，若判为"需要重做"，
+            # 就会反复提交同样的答案（实测白烧了数百次 AI 调用），还可能覆盖正确答案。
+            logger.info("章节检测成绩为 0 且页面没有对错标记，疑似尚未批阅，跳过重做判断")
+            return None
         # 分数不满但拿不到正确答案（被隐藏）→ 重做一次，反馈里只给题目
         return {"all_correct": False, "feedback": [], "score": score, "times": times}
 
@@ -976,7 +1000,17 @@ class Chaoxing:
         _video_info = _session.get(_info_url, headers=headers).json()
 
         if _video_info["status"] != "success":
-            logger.error(f"Unknown status: {_video_info['status']}")
+            status = str(_video_info.get("status") or "")
+            # 平台明确回答"这个资源不可用"（视频已下架/课程已结课）时，
+            # 重试也不会成功，按"跳过"处理，避免章节被反复重试后标记失败。
+            if status.lower() in {"failed", "error", "forbidden", "deleted", "invalid"}:
+                logger.warning(
+                    "视频资源不可用（status={}），可能已下架或课程已结课，跳过该任务点: {}",
+                    status,
+                    _job.get("name", ""),
+                )
+                return StudyResult.SKIPPED
+            logger.error(f"Unknown status: {status}")
             return StudyResult.ERROR
 
         _dtoken = _video_info["dtoken"]
@@ -1380,7 +1414,12 @@ class Chaoxing:
                 if res_json["status"]:
                     logger.info(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题成功 -> {res_json["msg"]}')
                 else:
-                    logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {res_json["msg"]}')
+                    message = str(res_json.get("msg", ""))
+                    logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {message}')
+                    # 平台明确说"作业已过期/已结束/已完成"时，重试没有任何意义
+                    if any(hint in message for hint in WORK_UNAVAILABLE_HINTS):
+                        logger.warning("该章节检测在平台侧已不可提交（{}），跳过重试", message)
+                        return StudyResult.SKIPPED
                     return StudyResult.ERROR
             else:
                 logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {res.text}')

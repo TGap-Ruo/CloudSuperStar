@@ -76,6 +76,30 @@ def test_graded_work_chapter_is_not_marked_failed(server_config, monkeypatch):
     assert fake.recorded.get("work_submit") is None
 
 
+def test_video_resource_failed_is_skipped_not_failed(server_config, monkeypatch):
+    """视频状态接口返回 failed（资源下架/结课）→ 章节标记为跳过，不判失败、不重试 5 次。"""
+    fake = fake_cx.install(monkeypatch, fake_cx.FakeChaoxing(video_status_failed=True))
+    report = run_account(server_config, server_config.accounts[0])
+
+    assert report.chapters_failed == 0, report.message
+    assert report.chapters_skipped == 1
+    assert "跳过" in report.message
+    # 只有一次尝试：没有把 5 次章节重试打满
+    status_calls = [c for c in fake.calls if "/ananas/status/" in c]
+    assert len(status_calls) == 1
+
+
+def test_expired_work_is_skipped_not_failed(server_config, monkeypatch):
+    """作业已过期 → 章节跳过，不再重试 5 次。"""
+    fake = fake_cx.install(monkeypatch, fake_cx.FakeChaoxing(work_expired=True))
+    report = run_account(server_config, server_config.accounts[0])
+
+    assert report.chapters_failed == 0, report.message
+    assert report.chapters_skipped == 1
+    # 只提交过一次（不会重试到 5 次）
+    assert fake.recorded.get("work_submit_count") == 1
+
+
 def test_transient_failure_is_retried_and_recovers(server_config, monkeypatch, fake_openai):
     """第一次提交失败、重试成功：验证重试中的章节不会被队列提前丢弃。"""
     fake = fake_cx.install(

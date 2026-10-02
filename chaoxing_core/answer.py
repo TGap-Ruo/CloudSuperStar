@@ -1,3 +1,4 @@
+import base64
 import configparser
 import json
 import os
@@ -18,6 +19,7 @@ from openai import OpenAI
 from urllib3 import disable_warnings, exceptions
 
 from chaoxing_core.answer_check import check_answer
+from chaoxing_core.config import GlobalConst
 from chaoxing_core.logger import logger
 
 # 关闭警告
@@ -47,6 +49,70 @@ def _report_usage(provider: str, model: str, usage, kind: str = "answer") -> Non
         hook({"provider": provider, "model": model, "usage": usage, "kind": kind})
     except Exception as exc:  # noqa: BLE001 - 统计失败绝不能影响答题
         logger.debug(f"用量回调异常: {exc}")
+
+
+# ─────────────── 图片题（超星"资料题"）支持 ───────────────
+# 超星有些章节检测的"题目"只有一张图片（题型代码 10，题干形如
+# 【资料题】<img src="https://p.ananas.chaoxing.com/...png">）。
+# 纯文本模型只能看到 <img> 标签文字，会回答"无法作答"→ 提交→ 0 分。
+# 这里把图片抓下来转成 data URI，交给支持视觉的模型直接看图作答。
+# 匹配完整的 <img ...> 标签并捕获 src（必须吃掉结尾的 >，否则替换后会留下残渣）
+_IMG_TAG_RE = re.compile(r'<img[^>]*?src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+_IMAGE_CACHE: dict[str, Optional[str]] = {}
+_IMAGE_CACHE_LOCK = threading.Lock()
+MAX_IMAGE_BYTES = 4 * 1024 * 1024          # 单张图上限 4MB
+MAX_IMAGES_PER_QUESTION = 2                # 单题最多带几张图
+
+# 已知不支持视觉的模型关键字（这些即使带图也会被丢弃 → 退化按文本处理）
+_TEXT_ONLY_MODEL_HINTS = ("deepseek-v4-pro", "reasoner", "coder")
+
+
+def model_supports_vision(model: str) -> bool:
+    """判断模型是否支持图像理解（deepseek-flash / 名字含 vision、vl 的模型支持）。"""
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if any(hint in name for hint in _TEXT_ONLY_MODEL_HINTS):
+        return False
+    if name in {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}:
+        return True
+    return bool(re.search(r"vision|(^|[^a-z])vl([^a-z]|$)", name))
+
+
+def extract_image_urls(text: str) -> list[str]:
+    """从题干/选项里取出 <img src> 的图片地址。"""
+    if not text:
+        return []
+    urls: list[str] = []
+    for url in _IMG_TAG_RE.findall(str(text)):
+        url = url.strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls[:MAX_IMAGES_PER_QUESTION]
+
+
+def fetch_image_data_uri(url: str, timeout: int = 15) -> Optional[str]:
+    """下载图片并转成 data URI（带内存缓存）。失败返回 None。"""
+    with _IMAGE_CACHE_LOCK:
+        if url in _IMAGE_CACHE:
+            return _IMAGE_CACHE[url]
+    data_uri = None
+    try:
+        resp = requests.get(
+            url,
+            timeout=timeout,
+            headers={**GlobalConst.HEADERS, "Referer": "https://mooc1.chaoxing.com/"},
+        )
+        if resp.status_code == 200 and resp.content and len(resp.content) <= MAX_IMAGE_BYTES:
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+            if not content_type.startswith("image/"):
+                content_type = "image/png"
+            data_uri = f"data:{content_type};base64,{base64.b64encode(resp.content).decode()}"
+    except Exception as exc:  # noqa: BLE001 - 抓图失败不应影响答题
+        logger.debug(f"下载题目图片失败 {url}: {exc}")
+    with _IMAGE_CACHE_LOCK:
+        _IMAGE_CACHE[url] = data_uri
+    return data_uri
 
 
 class CacheDAO:
@@ -1231,6 +1297,33 @@ class AI(Tiku):
             kwargs['extra_body'] = {'thinking': {'type': 'disabled'}}
         return kwargs
 
+    def _collect_question_images(self, q_info: dict) -> list:
+        """把图片题里的图片抓下来（返回 data URI 列表）。
+
+        仅在开启 vision 且当前模型支持视觉时抓取；抓不到就返回空列表，
+        调用方会自动退化为纯文本模式。
+        """
+        if not getattr(self, "vision", False):
+            return []
+        if not model_supports_vision(getattr(self, "model", "")):
+            logger.debug(f"模型 {getattr(self, 'model', '')} 不支持图像理解，图片题按文本处理")
+            return []
+        urls = extract_image_urls(q_info.get("title", "")) + extract_image_urls(
+            q_info.get("options", "")
+        )
+        images: list = []
+        for url in urls:
+            data_uri = fetch_image_data_uri(url)
+            if data_uri:
+                images.append(data_uri)
+            if len(images) >= MAX_IMAGES_PER_QUESTION:
+                break
+        if images:
+            logger.info(f"图片题：已附带 {len(images)} 张图片交给多模态模型识别")
+        elif urls:
+            logger.warning("图片题：图片下载失败，退化为纯文本作答")
+        return images
+
     def _wait_for_interval(self):
         if self.last_request_time:
             interval_time = time.time() - self.last_request_time
@@ -1261,6 +1354,14 @@ class AI(Tiku):
         cleaned_options = [re.sub(r"^[A-Z]\s*", "", option) for option in options_list]
         options = "\n".join(cleaned_options)
 
+        # 图片题（超星"资料题"）：把图抓下来交给多模态模型；
+        # 纯文本模型则保持原样（文字里会带 <img> 标签，模型至少知道是图片题）
+        images = self._collect_question_images(q_info)
+        if images:
+            q_info = dict(q_info)
+            q_info['title'] = _IMG_TAG_RE.sub('（题目见附图）', q_info.get('title') or '')
+            q_info['options'] = _IMG_TAG_RE.sub('（选项见附图）', q_info.get('options') or '')
+
         # 上一轮章节检测的错误反馈（若有）
         feedback_text = self._build_work_feedback_text()
 
@@ -1282,7 +1383,15 @@ class AI(Tiku):
             messages.append(
                 {
                     "role": "user",
-                    "content": user_content
+                    "content": (
+                        [{"type": "text", "text": user_content}]
+                        + [
+                            {"type": "image_url", "image_url": {"url": data_uri}}
+                            for data_uri in images
+                        ]
+                        if images
+                        else user_content
+                    ),
                 }
             )
             return messages
@@ -1347,6 +1456,10 @@ class AI(Tiku):
         self.model = self._conf['model']
         self.http_proxy = self._conf['http_proxy']
         self.min_interval_seconds = int(self._conf['min_interval_seconds'])
+        # 是否把图片题交给多模态模型（默认开启；模型不支持时会自动退化）
+        self.vision = str(self._conf.get('vision', 'true')).strip().lower() in {
+            '1', 'true', 'yes', 'y', 'on'
+        }
 
     def check_llm_connection(self) -> bool:
         """

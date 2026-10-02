@@ -112,6 +112,32 @@ def test_partial_score_with_hidden_answers_requests_redo():
     assert result["feedback"] == []
 
 
+def test_zero_score_without_markings_skips_redo():
+    """刚提交、平台还没批阅时会出现"成绩 0 分 + 没有对错标记"。
+
+    实测这会触发无意义的重做循环（同一份答案提交 4 轮）。此时应判为"无法判断"，
+    保留成绩、不再重做。
+    """
+    html = graded_page(
+        question_block("1", "【资料题】", "图片题：<img src='x.png'>", "图片中未提供题目内容，无法作答。",
+                       marked=""),
+        score="0",
+    )
+    assert judge_work_detail(_parse_work_record_detail(html), 0.0) is None
+
+
+def test_zero_score_with_wrong_marking_still_redoes():
+    """有明确错题标记时，即使 0 分也要重做（带反馈）。"""
+    html = graded_page(
+        question_block("1", "【单选题】", "题一", "A", marked="marking_cuo"),
+        score="0",
+    )
+    result = judge_work_detail(_parse_work_record_detail(html), 0.0)
+    assert result is not None
+    assert result["all_correct"] is False
+    assert len(result["feedback"]) == 1
+
+
 def test_no_information_skips_check():
     """既没有对错标记、也没有成绩、正确答案又被隐藏 → 不判定（按通过处理）。"""
     html = graded_page(question_block("1", "【单选题】", "题一", "A", marked=""), score="")

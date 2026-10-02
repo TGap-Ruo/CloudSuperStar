@@ -484,6 +484,8 @@ def create_admin_blueprint(
                     "key": str(payload["deepseek_key"]),
                     "model": str(payload.get("deepseek_model") or "deepseek-flash"),
                     "min_interval_seconds": 3,
+                    # 图片题（超星"资料题"）交给多模态模型识别
+                    "vision": bool(payload.get("deepseek_vision", True)),
                 }
             ]
         if answer_update:
@@ -553,11 +555,15 @@ def _deepseek_info(config: ServerConfig) -> dict[str, Any]:
             key = str(options.get("key") or options.get("api_key") or "")
             if not key:
                 continue
+            vision = str(options.get("vision", "true")).strip().lower() not in {
+                "0", "false", "no", "off"
+            }
             return {
                 "configured": True,
                 "provider": provider.normalized_type(),
                 "model": str(options.get("model", "")),
                 "base_url": str(options.get("base_url") or options.get("endpoint") or ""),
                 "key_masked": f"{key[:6]}…{key[-4:]}" if len(key) > 12 else "已配置",
+                "vision": vision,
             }
     return {"configured": False}

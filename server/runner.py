@@ -436,6 +436,11 @@ class JobProcessor:
                 case ChapterResult.ABORTED:
                     logger.warning("已达软超时，跳过章节: {}", title)
                     self.skipped_tasks.append(task)
+                case ChapterResult.SKIPPED:
+                    logger.warning(
+                        "章节在平台侧不可完成（作业已过期 / 资源已下架），跳过: {}", title
+                    )
+                    self.skipped_tasks.append(task)
                 case ChapterResult.ERROR:
                     task.tries += 1
                     logger.warning(
@@ -554,12 +559,17 @@ def process_chapter(
         # 空页面任务在 get_job_list 内部已处理
         return ChapterResult.SUCCESS
 
+    skipped = False
     for job in jobs:
         result = process_job(chaoxing, course, job, job_info, speed)
         if result.is_failure():
             return ChapterResult.ERROR
+        if result.is_skipped():
+            skipped = True
 
-    return ChapterResult.SUCCESS
+    # 有任务点被平台判定为不可完成（作业过期/资源下架）时，章节标记为"跳过"，
+    # 不再进入 5 次章节重试——重试也不会成功，只会刷一堆错误日志。
+    return ChapterResult.SKIPPED if skipped else ChapterResult.SUCCESS
 
 
 def sign_in_courses(chaoxing: Any, courses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -816,6 +826,9 @@ def run_account(
         else:
             report.status = "success"
             report.message = "全部章节任务已完成"
+        if report.chapters_skipped:
+            # 跳过不是失败：作业已过期 / 视频已下架等原因，重试也无用
+            report.message += f"（另有 {report.chapters_skipped} 个章节在平台侧不可完成，已跳过）"
         logger.info("运行结束: {} - {}", report.status, report.message)
         return report
 
